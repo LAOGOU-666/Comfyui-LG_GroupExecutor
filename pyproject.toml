@@ -1,0 +1,14 @@
+[project]
+name = "comfyui_lg_groupexecutor"
+description = "A ComfyUI extension for controlling and managing node group execution flow. Features include single/multiple group execution, delay control, signal chaining, and execution list repetition processing."
+version = "1.0.0"
+dependencies = [""]
+
+[project.urls]
+Repository = "https://github.com/LAOGOU-666/Comfyui-LG_GroupExecutor"
+# Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "laogou666" 
+DisplayName = "Comfyui-LG_GroupExecutor"
+Icon = ""
