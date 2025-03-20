@@ -783,12 +783,16 @@ class GroupExecutorUI {
         };
 
         try {
+            // 添加JSON验证
+            const jsonString = JSON.stringify(config);
+            JSON.parse(jsonString); // 验证JSON是否有效
+
             const response = await api.fetchApi('/group_executor/configs', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify(config)
+                body: jsonString
             });
 
             const result = await response.json();
