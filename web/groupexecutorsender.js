@@ -9,9 +9,11 @@ app.registerExtension({
                 this.properties = {
                     ...this.properties,
                     isExecuting: false,
+                    isCancelling: false,
                     statusText: "",
                     showStatus: false
                 };
+                
                 this.size = this.computeSize();
             };
 
@@ -122,10 +124,14 @@ app.registerExtension({
                 return new Promise((resolve, reject) => {
                     const checkQueue = async () => {
                         try {
+                            if (this.properties.isCancelling) {
+                                resolve();
+                                return;
+                            }
+                            
                             const status = await this.getQueueStatus();
 
                             if (!status.isRunning && !status.isPending) {
-
                                 setTimeout(resolve, 100);
                                 return;
                             }
@@ -133,7 +139,6 @@ app.registerExtension({
                             setTimeout(checkQueue, 500);
                         } catch (error) {
                             console.warn(`[GroupExecutorSender] 检查队列状态失败:`, error);
-
                             setTimeout(checkQueue, 500);
                         }
                     };
@@ -141,6 +146,51 @@ app.registerExtension({
                     checkQueue();
                 });
             };
+
+            nodeType.prototype.cancelExecution = async function() {
+                if (!this.properties.isExecuting) {
+                    console.warn('[GroupExecutorSender] 没有正在执行的任务');
+                    return;
+                }
+
+                try {
+                    this.properties.isCancelling = true;
+                    this.updateStatus("正在取消执行...");
+                    
+                    await fetch('/interrupt', { method: 'POST' });
+                    
+                    this.updateStatus("已取消");
+                    setTimeout(() => this.resetStatus(), 2000);
+                    
+                } catch (error) {
+                    console.error('[GroupExecutorSender] 取消执行时出错:', error);
+                    this.updateStatus(`取消失败: ${error.message}`);
+                }
+            };
+
+            const originalFetchApi = api.fetchApi;
+            api.fetchApi = async function(url, options = {}) {
+                if (url === '/interrupt') {
+                    api.dispatchEvent(new CustomEvent("execution_interrupt", { 
+                        detail: { timestamp: Date.now() }
+                    }));
+                }
+
+                return originalFetchApi.call(this, url, options);
+            };
+            api.addEventListener("execution_interrupt", () => {
+                const senderNodes = app.graph._nodes.filter(n => 
+                    n.type === "GroupExecutorSender" && n.properties.isExecuting
+                );
+
+                senderNodes.forEach(node => {
+                    if (node.properties.isExecuting && !node.properties.isCancelling) {
+                        console.log(`[GroupExecutorSender] 接收到中断请求，取消节点执行:`, node.id);
+                        node.properties.isCancelling = true;
+                        node.updateStatus("正在取消执行...");
+                    }
+                });
+            });
 
             api.addEventListener("execute_group_list", async ({ detail }) => {
                 if (!detail || !detail.node_id || !Array.isArray(detail.execution_list)) {
@@ -164,6 +214,7 @@ app.registerExtension({
                     }
 
                     node.properties.isExecuting = true;
+                    node.properties.isCancelling = false;
 
                     let totalTasks = executionList.reduce((total, item) => {
                         if (item.group_name !== "__delay__") {
@@ -175,6 +226,11 @@ app.registerExtension({
 
                     try {
                         for (const execution of executionList) {
+                            if (node.properties.isCancelling) {
+                                console.log('[GroupExecutorSender] 执行被取消');
+                                break;
+                            }
+                            
                             const group_name = execution.group_name || '';
                             const repeat_count = parseInt(execution.repeat_count) || 1;
                             const delay_seconds = parseFloat(execution.delay_seconds) || 0;
@@ -185,7 +241,7 @@ app.registerExtension({
                             }
 
                             if (group_name === "__delay__") {
-                                if (delay_seconds > 0) {
+                                if (delay_seconds > 0 && !node.properties.isCancelling) {
                                     node.updateStatus(
                                         `等待下一组 ${delay_seconds}s...`
                                     );
@@ -195,6 +251,9 @@ app.registerExtension({
                             }
 
                             for (let i = 0; i < repeat_count; i++) {
+                                if (node.properties.isCancelling) {
+                                    break;
+                                }
 
                                 currentTask++;
                                 const progress = (currentTask / totalTasks) * 100;
@@ -213,11 +272,20 @@ app.registerExtension({
                                     
                                     if (rgthree?.queueOutputNodes) {
                                         try {
+                                            if (node.properties.isCancelling) {
+                                                break;
+                                            }
                                             await rgthree.queueOutputNodes(nodeIds);
                                             await node.waitForQueue();
                                         } catch (queueError) {
+                                            if (node.properties.isCancelling) {
+                                                break;
+                                            }
                                             console.warn(`[GroupExecutorSender] rgthree执行失败，使用默认方式:`, queueError);
                                             for (const n of outputNodes) {
+                                                if (node.properties.isCancelling) {
+                                                    break;
+                                                }
                                                 if (n.triggerQueue) {
                                                     await n.triggerQueue();
                                                     await node.waitForQueue();
@@ -226,6 +294,9 @@ app.registerExtension({
                                         }
                                     } else {
                                         for (const n of outputNodes) {
+                                            if (node.properties.isCancelling) {
+                                                break;
+                                            }
                                             if (n.triggerQueue) {
                                                 await n.triggerQueue();
                                                 await node.waitForQueue();
@@ -233,7 +304,7 @@ app.registerExtension({
                                         }
                                     }
 
-                                    if (delay_seconds > 0 && (i < repeat_count - 1 || currentTask < totalTasks)) {
+                                    if (delay_seconds > 0 && (i < repeat_count - 1 || currentTask < totalTasks) && !node.properties.isCancelling) {
                                         node.updateStatus(
                                             `执行组: ${group_name} (${currentTask}/${totalTasks}) - 等待 ${delay_seconds}s`,
                                             progress
@@ -244,9 +315,19 @@ app.registerExtension({
                                     throw new Error(`执行组 "${group_name}" 失败: ${error.message}`);
                                 }
                             }
+                            
+                            if (node.properties.isCancelling) {
+                                break;
+                            }
                         }
 
-                        node.updateStatus(`执行完成 (${totalTasks}/${totalTasks})`, 100);
+                        if (node.properties.isCancelling) {
+                            node.updateStatus("已取消");
+                            setTimeout(() => node.resetStatus(), 2000);
+                        } else {
+                            node.updateStatus(`执行完成 (${totalTasks}/${totalTasks})`, 100);
+                            setTimeout(() => node.resetStatus(), 2000);
+                        }
 
                     } catch (error) {
                         console.error('[GroupExecutorSender] 执行错误:', error);
@@ -254,6 +335,7 @@ app.registerExtension({
                         app.ui.dialog.show(`执行错误: ${error.message}`);
                     } finally {
                         node.properties.isExecuting = false;
+                        node.properties.isCancelling = false;
                     }
 
                 } catch (error) {
@@ -261,6 +343,7 @@ app.registerExtension({
                     app.ui.dialog.show(`执行错误: ${error.message}`);
                     node.updateStatus(`错误: ${error.message}`);
                     node.properties.isExecuting = false;
+                    node.properties.isCancelling = false;
                 }
             });
         }
