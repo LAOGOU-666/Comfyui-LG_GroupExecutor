@@ -6,6 +6,15 @@ import torch
 import numpy as np
 from PIL import Image
 import folder_paths
+import random
+from nodes import SaveImage
+import json
+from comfy.cli_args import args
+from PIL.PngImagePlugin import PngInfo
+import psutil
+import ctypes
+from ctypes import wintypes
+
 
 class AnyType(str):
     """用于表示任意类型的特殊类，在类型比较时总是返回相等"""
@@ -41,18 +50,98 @@ class MemoryCleanup:
 
     def empty_cache(self, anything, offload_model, offload_cache, unique_id=None, extra_pnginfo=None):
         try:
-            # 发送信号到前端
-            PromptServer.instance.send_sync("memory_cleanup", {
-                "type": "cleanup_request",
-                "data": {
-                    "unload_models": offload_model,
-                    "free_memory": offload_cache
-                }
-            })
-            print("已发送内存清理信号")
-            
+            if offload_model:
+                import comfy.model_management
+                comfy.model_management.unload_all_models()
+            if offload_cache:
+                import torch
+                import gc
+                torch.cuda.empty_cache()
+                gc.collect()
         except Exception as e:
-            print(f"发送内存清理信号出错: {str(e)}")
+            print(f"内存清理出错: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            
+        return (anything,)
+    
+
+class RAMCleanup:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "anything": (any, {}),
+                "clean_file_cache": ("BOOLEAN", {"default": True, "label": "清理文件缓存"}),
+                "clean_processes": ("BOOLEAN", {"default": True, "label": "清理进程内存"}),
+                "clean_dlls": ("BOOLEAN", {"default": True, "label": "清理未使用DLL"}),
+                "retry_times": ("INT", {
+                    "default": 3, 
+                    "min": 1, 
+                    "max": 10, 
+                    "step": 1,
+                    "label": "重试次数"
+                }),
+            },
+            "optional": {},
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            }
+        }
+
+    RETURN_TYPES = (any,)
+    RETURN_NAMES = ("output",)
+    OUTPUT_NODE = True
+    FUNCTION = "clean_ram"
+    CATEGORY = "Memory Management"
+
+    def get_ram_usage(self):
+        memory = psutil.virtual_memory()
+        return memory.percent, memory.available / (1024 * 1024) 
+
+    def clean_ram(self, anything, clean_file_cache, clean_processes, clean_dlls, retry_times, unique_id=None, extra_pnginfo=None):
+        try:
+            current_usage, available_mb = self.get_ram_usage()
+            print(f"开始清理RAM - 当前使用率: {current_usage:.1f}%, 可用: {available_mb:.1f}MB")
+            
+            for attempt in range(retry_times):
+                
+                if clean_file_cache:
+                    try:
+                        ctypes.windll.kernel32.SetSystemFileCacheSize(-1, -1, 0)
+                    except Exception as e:
+                        print(f"清理文件缓存失败: {str(e)}")
+                        
+                if clean_processes:
+                    cleaned_processes = 0
+                    for process in psutil.process_iter(['pid', 'name']):
+                        try:
+                            handle = ctypes.windll.kernel32.OpenProcess(
+                                wintypes.DWORD(0x001F0FFF),
+                                wintypes.BOOL(False),
+                                wintypes.DWORD(process.info['pid'])
+                            )
+                            ctypes.windll.psapi.EmptyWorkingSet(handle)
+                            ctypes.windll.kernel32.CloseHandle(handle)
+                            cleaned_processes += 1
+                        except:
+                            continue
+
+                if clean_dlls:
+                    try:
+                        ctypes.windll.kernel32.SetProcessWorkingSetSize(-1, -1, -1)
+                    except Exception as e:
+                        print(f"释放DLL失败: {str(e)}")
+
+                time.sleep(1)
+                current_usage, available_mb = self.get_ram_usage()
+                print(f"清理后内存使用率: {current_usage:.1f}%, 可用: {available_mb:.1f}MB")
+
+            print(f"清理完成 - 最终内存使用率: {current_usage:.1f}%, 可用: {available_mb:.1f}MB")
+
+        except Exception as e:
+            print(f"RAM清理过程出错: {str(e)}")
             
         return (anything,)
 
@@ -61,7 +150,8 @@ class LG_ImageSender:
         self.output_dir = folder_paths.get_temp_directory()
         self.type = "temp"
         self.compress_level = 1
-
+        self.accumulated_results = []  # 添加积累结果列表
+        
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -69,7 +159,7 @@ class LG_ImageSender:
                 "images": ("IMAGE", {"tooltip": "要发送的图像"}),
                 "filename_prefix": ("STRING", {"default": "lg_send"}),
                 "link_id": ("INT", {"default": 1, "min": 0, "max": sys.maxsize, "step": 1, "tooltip": "发送端连接ID"}),
-                "trigger_always": ("BOOLEAN", {"default": False, "tooltip": "开启后每次都会触发"})
+                "accumulate": ("BOOLEAN", {"default": False, "tooltip": "开启后将累积所有图像一起发送"})  # 改名为accumulate
             },
             "optional": {
                 "masks": ("MASK", {"tooltip": "要发送的遮罩"})
@@ -84,55 +174,54 @@ class LG_ImageSender:
     INPUT_IS_LIST = True
 
     @classmethod
-    def IS_CHANGED(s, images, filename_prefix, link_id, trigger_always, masks=None, prompt=None, extra_pnginfo=None):
-        if isinstance(trigger_always, list):
-            trigger_always = trigger_always[0]
+    def IS_CHANGED(s, images, filename_prefix, link_id, accumulate, masks=None, prompt=None, extra_pnginfo=None):
+        if isinstance(accumulate, list):
+            accumulate = accumulate[0]
         
-        if trigger_always:
-            return float("NaN")
+        if accumulate:
+            return float("NaN") 
         
-        # 同时考虑图像和遮罩的变化
+        # 非积累模式下计算hash
         hash_value = hash(str(images) + str(masks))
         return hash_value
 
-    def save_images(self, images, filename_prefix, link_id, trigger_always, masks=None, prompt=None, extra_pnginfo=None):
+    def save_images(self, images, filename_prefix, link_id, accumulate, masks=None, prompt=None, extra_pnginfo=None):
         timestamp = int(time.time() * 1000)
         results = list()
-        
-        # 获取实际的值
+
         filename_prefix = filename_prefix[0] if isinstance(filename_prefix, list) else filename_prefix
         link_id = link_id[0] if isinstance(link_id, list) else link_id
-        trigger_always = trigger_always[0] if isinstance(trigger_always, list) else trigger_always
+        accumulate = accumulate[0] if isinstance(accumulate, list) else accumulate
         
         for idx, image_batch in enumerate(images):
             try:
                 image = image_batch.squeeze()
-                # 转换为PIL图像
+
                 rgb_image = Image.fromarray(np.clip(255. * image.cpu().numpy(), 0, 255).astype(np.uint8))
-                
-                # 获取对应的遮罩或创建空遮罩
+
                 if masks is not None and idx < len(masks):
                     mask = masks[idx].squeeze()
                     mask_img = Image.fromarray(np.clip(255. * (1 - mask.cpu().numpy()), 0, 255).astype(np.uint8))
                 else:
                     mask_img = Image.new('L', rgb_image.size, 255)
-                
-                # 合并RGB和遮罩为RGBA
+
                 r, g, b = rgb_image.convert('RGB').split()
                 rgba_image = Image.merge('RGBA', (r, g, b, mask_img))
-                
-                # 保存RGBA图像
+
                 filename = f"{filename_prefix}_{link_id}_{timestamp}_{idx}.png"
                 file_path = os.path.join(self.output_dir, filename)
-                print(f"[ImageSender] 发送图像: {filename}")
                 
                 rgba_image.save(file_path, compress_level=self.compress_level)
                 
-                results.append({
+                result = {
                     "filename": filename,
                     "subfolder": "",
                     "type": self.type
-                })
+                }
+                results.append(result)
+
+                if accumulate:
+                    self.accumulated_results.append(result)
 
             except Exception as e:
                 print(f"[ImageSender] 处理图像 {idx+1} 时出错: {str(e)}")
@@ -140,13 +229,18 @@ class LG_ImageSender:
                 traceback.print_exc()
                 continue
 
-        if results:
+        send_results = self.accumulated_results if accumulate else results
+        
+        if send_results:
+            print(f"[ImageSender] 发送 {len(send_results)} 张图像")
             PromptServer.instance.send_sync("img-send", {
                 "link_id": link_id,
-                "images": results
+                "images": send_results
             })
+        if not accumulate:
+            self.accumulated_results = []
         
-        return { "ui": { "images": results } }
+        return { "ui": { "images": send_results } }
 
 class LG_ImageReceiver:
     @classmethod
@@ -496,3 +590,162 @@ class MaskListRepeater:
             return ([],)
 
 
+    
+class LG_FastPreview(SaveImage):
+    def __init__(self):
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
+        self.prefix_append = "_temp_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+                    "images": ("IMAGE", ),
+                    "format": (["PNG", "JPEG", "WEBP"], {"default": "JPEG"}),
+                    "quality": ("INT", {"default": 95, "min": 1, "max": 100, "step": 1}),
+                },
+                "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+               }
+    
+    RETURN_TYPES = ()
+    FUNCTION = "save_images"
+    
+    CATEGORY = "image"
+    DESCRIPTION = "快速预览图像,支持多种格式和质量设置"
+
+    def save_images(self, images, format="JPEG", quality=95, prompt=None, extra_pnginfo=None):
+        filename_prefix = "preview"
+        filename_prefix += self.prefix_append
+        full_output_folder, filename, counter, subfolder, filename_prefix = folder_paths.get_save_image_path(filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0])
+        
+        results = list()
+        for (batch_number, image) in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            save_kwargs = {}
+            if format == "PNG":
+                file_extension = ".png"
+
+                compress_level = int(9 * (1 - quality/100)) 
+                save_kwargs["compress_level"] = compress_level
+
+                if not args.disable_metadata:
+                    metadata = PngInfo()
+                    if prompt is not None:
+                        metadata.add_text("prompt", json.dumps(prompt))
+                    if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            metadata.add_text(x, json.dumps(extra_pnginfo[x]))
+                    save_kwargs["pnginfo"] = metadata
+            elif format == "JPEG":
+                file_extension = ".jpg"
+                save_kwargs["quality"] = quality
+                save_kwargs["optimize"] = True
+            else:  
+                file_extension = ".webp"
+                save_kwargs["quality"] = quality
+                
+            filename_with_batch_num = filename.replace("%batch_num%", str(batch_number))
+            file = f"{filename_with_batch_num}_{counter:05}_{file_extension}"
+            
+            img.save(os.path.join(full_output_folder, file), format=format, **save_kwargs)
+            
+            results.append({
+                "filename": file,
+                "subfolder": subfolder,
+                "type": self.type
+            })
+            counter += 1
+
+        return { "ui": { "images": results } }
+    
+class LG_AccumulatePreview(SaveImage):
+    def __init__(self):
+        self.output_dir = folder_paths.get_temp_directory()
+        self.type = "temp"
+        self.prefix_append = "_acc_" + ''.join(random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5))
+        self.accumulated_images = []
+        self.accumulated_masks = []
+        self.counter = 0
+        
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {
+                    "images": ("IMAGE", ),
+                },
+                "optional": {
+                    "mask": ("MASK",),
+                },
+                "hidden": {
+                    "prompt": "PROMPT", 
+                    "extra_pnginfo": "EXTRA_PNGINFO",
+                    "unique_id": "UNIQUE_ID"
+                },
+               }
+    
+    RETURN_TYPES = ("IMAGE", "MASK", "INT")
+    RETURN_NAMES = ("images", "masks", "image_count")
+    FUNCTION = "accumulate_images"
+    OUTPUT_NODE = True
+    OUTPUT_IS_LIST = (True, True, False)
+    CATEGORY = "🎈LAOGOU"
+    DESCRIPTION = "累计图像预览"
+
+    def accumulate_images(self, images, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):
+        # 添加调试信息
+        print(f"[AccumulatePreview] accumulate_images - 当前累积图片数量: {len(self.accumulated_images)}")
+        print(f"[AccumulatePreview] accumulate_images - 新输入图片数量: {len(images)}")
+        print(f"[AccumulatePreview] accumulate_images - unique_id: {unique_id}")
+        
+        filename_prefix = "accumulate"
+        filename_prefix += self.prefix_append
+
+        full_output_folder, filename, _, subfolder, filename_prefix = folder_paths.get_save_image_path(
+            filename_prefix, self.output_dir, images[0].shape[1], images[0].shape[0]
+        )
+
+        for image in images:
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+
+            file = f"{filename}_{self.counter:05}.png"
+            img.save(os.path.join(full_output_folder, file), format="PNG")
+
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0) 
+            self.accumulated_images.append({
+                "image": image,
+                "info": {
+                    "filename": file,
+                    "subfolder": subfolder,
+                    "type": self.type
+                }
+            })
+
+            if mask is not None:
+                if len(mask.shape) == 2:
+                    mask = mask.unsqueeze(0)
+                self.accumulated_masks.append(mask)
+            else:
+                self.accumulated_masks.append(None)
+            
+            self.counter += 1
+
+        if not self.accumulated_images:
+            return {"ui": {"images": []}, "result": ([], [], 0)}
+
+        accumulated_tensors = []
+        for item in self.accumulated_images:
+            img = item["image"]
+            if len(img.shape) == 3:  # [H, W, C]
+                img = img.unsqueeze(0)  # 变成 [1, H, W, C]
+            accumulated_tensors.append(img)
+
+        accumulated_masks = [m for m in self.accumulated_masks if m is not None]
+        
+        ui_images = [item["info"] for item in self.accumulated_images]
+        
+        return {
+            "ui": {"images": ui_images},
+            "result": (accumulated_tensors, accumulated_masks, len(self.accumulated_images))
+        }
