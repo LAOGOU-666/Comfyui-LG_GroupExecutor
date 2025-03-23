@@ -10,7 +10,7 @@ from nodes import SaveImage
 import json
 from comfy.cli_args import args
 from PIL.PngImagePlugin import PngInfo
-
+import time
 
 class LG_ImageSender:
     def __init__(self):
