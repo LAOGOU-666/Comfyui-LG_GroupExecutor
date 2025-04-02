@@ -17,7 +17,7 @@ class LG_ImageSender:
         self.output_dir = folder_paths.get_temp_directory()
         self.type = "temp"
         self.compress_level = 1
-        self.accumulated_results = []  # 添加积累结果列表
+        self.accumulated_results = []  
         
     @classmethod
     def INPUT_TYPES(s):
@@ -112,9 +112,6 @@ class LG_ImageSender:
 class LG_ImageReceiver:
     @classmethod
     def INPUT_TYPES(s):
-        temp_dir = folder_paths.get_temp_directory()
-        files = [f for f in os.listdir(temp_dir) if os.path.isfile(os.path.join(temp_dir, f))]
-        
         return {
             "required": {
                 "image": ("STRING", {"default": "", "multiline": False, "tooltip": "多个文件名用逗号分隔"}),
@@ -140,47 +137,46 @@ class LG_ImageReceiver:
             empty_mask = torch.zeros((1, 64, 64), dtype=torch.float32)
             return ([empty_image], [empty_mask])
         
-        temp_dir = folder_paths.get_temp_directory()
-        
-        for img_file in image_files:
-            try:
-                img_path = os.path.join(temp_dir, img_file)
-                
-                if not os.path.exists(img_path):
-                    continue
+        try:
+            temp_dir = folder_paths.get_temp_directory()
+            
+            for img_file in image_files:
+                try:
+                    img_path = os.path.join(temp_dir, img_file)
                     
-                # 加载RGBA图像
-                img = Image.open(img_path)
-                
-                if img.mode == 'RGBA':
-                    # 分离RGB和Alpha通道
-                    r, g, b, a = img.split()
-                    # 合并RGB通道
-                    rgb_image = Image.merge('RGB', (r, g, b))
-                    # 转换为tensor
-                    image = np.array(rgb_image).astype(np.float32) / 255.0
-                    image = torch.from_numpy(image)[None,]
-                    # 转换alpha为mask，并确保维度是 (B, H, W)
-                    mask = np.array(a).astype(np.float32) / 255.0
-                    mask = torch.from_numpy(mask)[None,]  # 添加batch维度
-                    # 反转遮罩值
-                    mask = 1.0 - mask
-                else:
-                    # 如果不是RGBA，按原来的方式处理
-                    image = np.array(img.convert('RGB')).astype(np.float32) / 255.0
-                    image = torch.from_numpy(image)[None,]
-                    mask = torch.zeros((1, image.shape[1], image.shape[2]), dtype=torch.float32, device="cpu")
-                
-                output_images.append(image)
-                output_masks.append(mask)
-                
-            except Exception as e:
-                print(f"[ImageReceiver] 处理文件 {img_file} 时出错: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
-        return (output_images, output_masks)
+                    if not os.path.exists(img_path):
+                        print(f"[ImageReceiver] 文件不存在: {img_path}")
+                        continue
+                    
+                    img = Image.open(img_path)
+                    
+                    if img.mode == 'RGBA':
+                        r, g, b, a = img.split()
+                        rgb_image = Image.merge('RGB', (r, g, b))
+                        image = np.array(rgb_image).astype(np.float32) / 255.0
+                        image = torch.from_numpy(image)[None,]
+                        mask = np.array(a).astype(np.float32) / 255.0
+                        mask = torch.from_numpy(mask)[None,]
+                        mask = 1.0 - mask
+                    else:
+                        image = np.array(img.convert('RGB')).astype(np.float32) / 255.0
+                        image = torch.from_numpy(image)[None,]
+                        mask = torch.zeros((1, image.shape[1], image.shape[2]), dtype=torch.float32, device="cpu")
+                    
+                    output_images.append(image)
+                    output_masks.append(mask)
+                    
+                except Exception as e:
+                    print(f"[ImageReceiver] 处理文件 {img_file} 时出错: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            return (output_images, output_masks)
+
+        except Exception as e:
+            print(f"[ImageReceiver] 处理图像时出错: {str(e)}")
+            return ([], [])
 
 class ImageListSplitter:
     @classmethod

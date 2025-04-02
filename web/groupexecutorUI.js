@@ -32,30 +32,43 @@ class GroupExecutorUI {
                 </div>
             </div>
             <div class="ge-content">
-                <div class="ge-row ge-config-row">
-                    <select class="ge-config-select">
-                        <option value="">选择配置</option>
-                    </select>
-                    <button class="ge-save-config" title="保存配置">💾</button>
-                    <button class="ge-delete-config" title="删除配置">🗑️</button>
+                <div class="ge-mode-switch">
+                    <button class="ge-mode-btn active" data-mode="multi">多组执行</button>
+                    <button class="ge-mode-btn" data-mode="single">单组执行</button>
                 </div>
-                <div class="ge-row">
-                    <label>组数量:</label>
-                    <input type="number" class="ge-group-count" min="1" max="10" value="1">
+                <div class="ge-multi-mode">
+                    <div class="ge-row ge-config-row">
+                        <select class="ge-config-select">
+                            <option value="">选择配置</option>
+                        </select>
+                        <button class="ge-save-config" title="保存配置">💾</button>
+                        <button class="ge-delete-config" title="删除配置">🗑️</button>
+                    </div>
+                    <div class="ge-row">
+                        <label>组数量:</label>
+                        <input type="number" class="ge-group-count" min="1" max="50" value="1">
+                    </div>
+                    <div class="ge-groups-container"></div>
+                    <div class="ge-row">
+                        <label>重复次数:</label>
+                        <input type="number" class="ge-repeat-count" min="1" max="100" value="1">
+                    </div>
+                    <div class="ge-row">
+                        <label>延迟(秒):</label>
+                        <input type="number" class="ge-delay" min="0" max="300" step="0.1" value="0">
+                    </div>
+                    <div class="ge-status"></div>
+                    <div class="ge-buttons">
+                        <button class="ge-execute-btn">执行</button>
+                        <button class="ge-cancel-btn" disabled>取消</button>
+                    </div>
                 </div>
-                <div class="ge-groups-container"></div>
-                <div class="ge-row">
-                    <label>重复次数:</label>
-                    <input type="number" class="ge-repeat-count" min="1" max="100" value="1">
-                </div>
-                <div class="ge-row">
-                    <label>延迟(秒):</label>
-                    <input type="number" class="ge-delay" min="0" max="300" step="0.1" value="0">
-                </div>
-                <div class="ge-status"></div>
-                <div class="ge-buttons">
-                    <button class="ge-execute-btn">执行</button>
-                    <button class="ge-cancel-btn" disabled>取消</button>
+                <div class="ge-single-mode" style="display: none;">
+                    <div class="ge-search-container">
+                        <input type="text" class="ge-search-input" placeholder="搜索组名称...">
+                        <button class="ge-search-clear" title="清除搜索">×</button>
+                    </div>
+                    <div class="ge-groups-list"></div>
                 </div>
             </div>
         `;
@@ -98,6 +111,9 @@ class GroupExecutorUI {
             }
             .ge-content {
                 padding: 12px;
+                display: flex;
+                flex-direction: column;
+                max-height: calc(100vh - 100px);
             }
             .ge-row {
                 display: flex;
@@ -116,8 +132,30 @@ class GroupExecutorUI {
                 color: #fff;
                 border-radius: 4px;
             }
-            .ge-groups-container {
+            .ge-groups-container,
+            .ge-groups-list {
+                max-height: calc(50vh - 180px);
+                overflow-y: auto;
                 margin-bottom: 12px;
+                padding-right: 8px;
+            }
+            .ge-groups-container::-webkit-scrollbar,
+            .ge-groups-list::-webkit-scrollbar {
+                width: 6px;
+            }
+            .ge-groups-container::-webkit-scrollbar-track,
+            .ge-groups-list::-webkit-scrollbar-track {
+                background: #2a2a2a;
+                border-radius: 3px;
+            }
+            .ge-groups-container::-webkit-scrollbar-thumb,
+            .ge-groups-list::-webkit-scrollbar-thumb {
+                background: #555;
+                border-radius: 3px;
+            }
+            .ge-groups-container::-webkit-scrollbar-thumb:hover,
+            .ge-groups-list::-webkit-scrollbar-thumb:hover {
+                background: #666;
             }
             .ge-group-select {
                 width: 100%;
@@ -127,6 +165,30 @@ class GroupExecutorUI {
                 border: 1px solid #444;
                 color: #fff;
                 border-radius: 4px;
+            }
+            .ge-group-select:last-child {
+                margin-bottom: 0;
+            }
+            .ge-group-item {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 10px;
+                margin-bottom: 8px;
+                background: #333;
+                border-radius: 4px;
+            }
+            .ge-group-item:last-child {
+                margin-bottom: 0;
+            }
+            .ge-group-name {
+                flex: 1;
+                margin-right: 8px;
+            }
+            .ge-group-controls {
+                display: flex;
+                gap: 10px;
+                margin-left: auto;
             }
             .ge-buttons {
                 display: flex;
@@ -253,6 +315,86 @@ class GroupExecutorUI {
                 opacity: 0.5;
                 cursor: not-allowed;
             }
+            .ge-mode-switch {
+                display: flex;
+                margin-bottom: 12px;
+                gap: 8px;
+            }
+            .ge-mode-btn {
+                flex: 1;
+                padding: 8px;
+                background: #333;
+                border: 1px solid #444;
+                color: #fff;
+                border-radius: 4px;
+                cursor: pointer;
+            }
+            .ge-mode-btn.active {
+                background: #4CAF50;
+                border-color: #4CAF50;
+            }
+            .ge-execute-single-btn,
+            .ge-cancel-single-btn {
+                padding: 6px 12px;
+                font-size: 14px;
+                min-width: 60px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+            }
+            .ge-execute-single-btn {
+                background: #4CAF50;
+                color: white;
+            }
+            .ge-cancel-single-btn {
+                background: #f44336;
+                color: white;
+                display: none;
+            }
+            .ge-execute-single-btn:disabled,
+            .ge-cancel-single-btn:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            .ge-execute-single-btn:hover:not(:disabled) {
+                background: #45a049;
+            }
+            .ge-cancel-single-btn:hover:not(:disabled) {
+                background: #d32f2f;
+            }
+            .ge-search-container {
+                display: flex;
+                align-items: center;
+                margin-bottom: 12px;
+                gap: 8px;
+            }
+            .ge-search-input {
+                flex: 1;
+                padding: 8px 12px;
+                background: #333;
+                border: 1px solid #444;
+                color: #fff;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            .ge-search-input:focus {
+                outline: none;
+                border-color: #666;
+            }
+            .ge-search-clear {
+                background: #444;
+                border: none;
+                color: #fff;
+                padding: 6px 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 16px;
+                display: none;
+            }
+            .ge-search-clear:hover {
+                background: #555;
+            }
         `;
         document.head.appendChild(style);
         document.body.appendChild(this.container);
@@ -332,6 +474,20 @@ class GroupExecutorUI {
         });
         updateDeleteButton();
         this.loadConfigs();
+        const modeBtns = this.container.querySelectorAll('.ge-mode-btn');
+        modeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const mode = btn.dataset.mode;
+                this.switchMode(mode);
+            });
+        });
+        this.updateSingleModeList();
+        const searchInput = this.container.querySelector('.ge-search-input');
+        const clearButton = this.container.querySelector('.ge-search-clear');
+        
+        searchInput.addEventListener('input', () => {
+            clearButton.style.display = searchInput.value ? 'block' : 'none';
+        });
     }
     showDockMenu(button) {
         const existingMenu = document.querySelector('.ge-dock-menu');
@@ -698,11 +854,113 @@ class GroupExecutorUI {
             app.ui.dialog.show('删除配置失败: ' + error.message);
         }
     }
+    switchMode(mode) {
+        const multiMode = this.container.querySelector('.ge-multi-mode');
+        const singleMode = this.container.querySelector('.ge-single-mode');
+        const modeBtns = this.container.querySelectorAll('.ge-mode-btn');
+        
+        modeBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+        
+        if (mode === 'multi') {
+            multiMode.style.display = '';
+            singleMode.style.display = 'none';
+        } else {
+            multiMode.style.display = 'none';
+            singleMode.style.display = '';
+            this.updateSingleModeList();
+        }
+    }
+    updateSingleModeList() {
+        const container = this.container.querySelector('.ge-groups-list');
+        const searchInput = this.container.querySelector('.ge-search-input');
+        const clearButton = this.container.querySelector('.ge-search-clear');
+        const groupNames = this.getGroupNames();
+        
+        const filterGroups = (searchText) => {
+            const normalizedSearch = searchText.toLowerCase();
+            return groupNames.filter(name => 
+                name.toLowerCase().includes(normalizedSearch)
+            );
+        };
+
+        const renderGroups = (filteredGroups) => {
+            container.innerHTML = filteredGroups.map(name => `
+                <div class="ge-group-item" data-group="${name}">
+                    <span class="ge-group-name">${name}</span>
+                    <div class="ge-group-controls">
+                        <button class="ge-execute-single-btn">执行</button>
+                        <button class="ge-cancel-single-btn" disabled>取消</button>
+                    </div>
+                </div>
+            `).join('');
+
+            container.querySelectorAll('.ge-group-item').forEach(item => {
+                const groupName = item.dataset.group;
+                const executeBtn = item.querySelector('.ge-execute-single-btn');
+                const cancelBtn = item.querySelector('.ge-cancel-single-btn');
+                
+                executeBtn.addEventListener('click', async () => {
+                    executeBtn.disabled = true;
+                    cancelBtn.disabled = false;
+                    cancelBtn.style.display = 'block';
+                    this.isExecuting = true;
+                    this.isCancelling = false;
+                    
+                    try {
+                        await this.executeGroup(groupName);
+                        this.updateStatus(`组 "${groupName}" 执行完成`);
+                    } catch (error) {
+                        this.updateStatus(`执行失败: ${error.message}`);
+                        console.error(error);
+                    } finally {
+                        this.isExecuting = false;
+                        this.isCancelling = false;
+                        executeBtn.disabled = false;
+                        cancelBtn.disabled = true;
+                        cancelBtn.style.display = 'none';
+                    }
+                });
+                
+                cancelBtn.addEventListener('click', async () => {
+                    if (!this.isExecuting) return;
+                    
+                    try {
+                        this.isCancelling = true;
+                        this.updateStatus("正在取消...", 0);
+                        await fetch('/interrupt', { method: 'POST' });
+                        this.updateStatus("已取消", 0);
+                    } catch (error) {
+                        console.error('[GroupExecutorUI] 取消执行时出错:', error);
+                        this.updateStatus(`取消失败: ${error.message}`, 0);
+                    }
+                });
+            });
+        };
+
+        renderGroups(groupNames);
+
+        searchInput.addEventListener('input', (e) => {
+            const searchText = e.target.value;
+            clearButton.style.display = searchText ? 'block' : 'none';
+            const filteredGroups = filterGroups(searchText);
+            renderGroups(filteredGroups);
+        });
+
+        clearButton.addEventListener('click', () => {
+            searchInput.value = '';
+            clearButton.style.display = 'none';
+            renderGroups(groupNames);
+        });
+    }
 }
 app.registerExtension({
     name: "GroupExecutorUI",
     async setup() {
         await app.ui.settings.setup;
+        
+        // 先添加设置
         app.ui.settings.addSetting({
             id: "GroupExecutor.enabled",
             name: "显示组执行器按钮",
@@ -715,6 +973,7 @@ app.registerExtension({
                 }
             }
         });
+        
         app.ui.settings.addSetting({
             id: "GroupExecutor.marginX",
             name: "组执行器水平边距",
@@ -738,7 +997,7 @@ app.registerExtension({
             id: "GroupExecutor.marginY",
             name: "组执行器垂直边距",
             type: "number",
-            defaultValue: 20,
+            defaultValue: 40,
             min: 0,
             max: 100,
             step: 1,
@@ -763,16 +1022,41 @@ app.registerExtension({
                 content: "组执行器",
                 classList: "comfyui-button comfyui-menu-mobile-collapse group-executor-btn"
             }).element;
-            const enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled", true);
+            
+            // 修复: 不传递默认值参数
+            let enabled = true;
+            try {
+                enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled");
+                // 如果返回undefined，则使用默认值
+                if (enabled === undefined) {
+                    enabled = true;
+                }
+            } catch (err) {
+                console.warn("获取组执行器设置失败，使用默认值", err);
+            }
+            
             btn.style.display = enabled ? 'block' : 'none';
             app.menu?.actionsGroup.element.after(btn);
-        } catch {
+        } catch (error) {
+            console.warn("创建现代UI按钮失败，使用传统按钮", error);
             const menu = document.querySelector(".comfy-menu");
             const clearButton = document.getElementById("comfy-clear-button");
             const groupExecutorButton = document.createElement("button");
             groupExecutorButton.textContent = "组执行器";
             groupExecutorButton.classList.add("group-executor-btn");
-            const enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled", true);
+            
+            // 修复: 不传递默认值参数
+            let enabled = true;
+            try {
+                enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled");
+                // 如果返回undefined，则使用默认值
+                if (enabled === undefined) {
+                    enabled = true;
+                }
+            } catch (err) {
+                console.warn("获取组执行器设置失败，使用默认值", err);
+            }
+            
             groupExecutorButton.style.display = enabled ? 'block' : 'none';
             groupExecutorButton.addEventListener("click", () => {
                 new GroupExecutorUI();
