@@ -997,7 +997,7 @@ app.registerExtension({
             id: "GroupExecutor.marginY",
             name: "组执行器垂直边距",
             type: "number",
-            defaultValue: 40,
+            defaultValue: 60,
             min: 0,
             max: 100,
             step: 1,
