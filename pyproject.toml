@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_lg_groupexecutor"
 description = "A ComfyUI extension for controlling and managing node group execution flow. Features include single/multiple group execution, delay control, signal chaining, and execution list repetition processing."
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [""]
 
 [project.urls]
