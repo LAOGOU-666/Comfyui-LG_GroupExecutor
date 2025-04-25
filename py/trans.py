@@ -26,7 +26,8 @@ class LG_ImageSender:
                 "images": ("IMAGE", {"tooltip": "要发送的图像"}),
                 "filename_prefix": ("STRING", {"default": "lg_send"}),
                 "link_id": ("INT", {"default": 1, "min": 0, "max": sys.maxsize, "step": 1, "tooltip": "发送端连接ID"}),
-                "accumulate": ("BOOLEAN", {"default": False, "tooltip": "开启后将累积所有图像一起发送"})  # 改名为accumulate
+                "accumulate": ("BOOLEAN", {"default": False, "tooltip": "开启后将累积所有图像一起发送"}), 
+                "preview_rgba": ("BOOLEAN", {"default": True, "tooltip": "开启后预览显示RGBA格式，关闭则预览显示RGB格式"})
             },
             "optional": {
                 "masks": ("MASK", {"tooltip": "要发送的遮罩"})
@@ -41,7 +42,7 @@ class LG_ImageSender:
     INPUT_IS_LIST = True
 
     @classmethod
-    def IS_CHANGED(s, images, filename_prefix, link_id, accumulate, masks=None, prompt=None, extra_pnginfo=None):
+    def IS_CHANGED(s, images, filename_prefix, link_id, accumulate, preview_rgba, masks=None, prompt=None, extra_pnginfo=None):
         if isinstance(accumulate, list):
             accumulate = accumulate[0]
         
@@ -52,18 +53,18 @@ class LG_ImageSender:
         hash_value = hash(str(images) + str(masks))
         return hash_value
 
-    def save_images(self, images, filename_prefix, link_id, accumulate, masks=None, prompt=None, extra_pnginfo=None):
+    def save_images(self, images, filename_prefix, link_id, accumulate, preview_rgba, masks=None, prompt=None, extra_pnginfo=None):
         timestamp = int(time.time() * 1000)
         results = list()
 
         filename_prefix = filename_prefix[0] if isinstance(filename_prefix, list) else filename_prefix
         link_id = link_id[0] if isinstance(link_id, list) else link_id
         accumulate = accumulate[0] if isinstance(accumulate, list) else accumulate
+        preview_rgba = preview_rgba[0] if isinstance(preview_rgba, list) else preview_rgba
         
         for idx, image_batch in enumerate(images):
             try:
                 image = image_batch.squeeze()
-
                 rgb_image = Image.fromarray(np.clip(255. * image.cpu().numpy(), 0, 255).astype(np.uint8))
 
                 if masks is not None and idx < len(masks):
@@ -75,20 +76,36 @@ class LG_ImageSender:
                 r, g, b = rgb_image.convert('RGB').split()
                 rgba_image = Image.merge('RGBA', (r, g, b, mask_img))
 
+                # 保存RGBA格式，这是实际要发送的文件
                 filename = f"{filename_prefix}_{link_id}_{timestamp}_{idx}.png"
                 file_path = os.path.join(self.output_dir, filename)
-                
                 rgba_image.save(file_path, compress_level=self.compress_level)
                 
-                result = {
+                # 准备要发送的数据项
+                original_result = {
                     "filename": filename,
                     "subfolder": "",
                     "type": self.type
                 }
-                results.append(result)
+                
+                # 如果是要显示RGB预览
+                if not preview_rgba:
+                    preview_filename = f"{filename_prefix}_{link_id}_{timestamp}_{idx}_preview.jpg"
+                    preview_path = os.path.join(self.output_dir, preview_filename)
+                    rgb_image.save(preview_path, format="JPEG", quality=95)
+                    # 将预览图添加到UI显示结果中
+                    results.append({
+                        "filename": preview_filename,
+                        "subfolder": "",
+                        "type": self.type
+                    })
+                else:
+                    # 显示RGBA
+                    results.append(original_result)
 
+                # 累积的始终是原始图像结果
                 if accumulate:
-                    self.accumulated_results.append(result)
+                    self.accumulated_results.append(original_result)
 
             except Exception as e:
                 print(f"[ImageSender] 处理图像 {idx+1} 时出错: {str(e)}")
@@ -96,7 +113,19 @@ class LG_ImageSender:
                 traceback.print_exc()
                 continue
 
-        send_results = self.accumulated_results if accumulate else results
+        # 获取实际要发送的结果
+        if accumulate:
+            send_results = self.accumulated_results
+        else:
+            # 创建一个包含原始文件名的列表用于发送
+            send_results = []
+            for idx in range(len(results)):
+                original_filename = f"{filename_prefix}_{link_id}_{timestamp}_{idx}.png"
+                send_results.append({
+                    "filename": original_filename,
+                    "subfolder": "",
+                    "type": self.type
+                })
         
         if send_results:
             print(f"[ImageSender] 发送 {len(send_results)} 张图像")
@@ -107,7 +136,7 @@ class LG_ImageSender:
         if not accumulate:
             self.accumulated_results = []
         
-        return { "ui": { "images": send_results } }
+        return { "ui": { "images": results } }
 
 class LG_ImageReceiver:
     @classmethod

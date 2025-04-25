@@ -213,7 +213,8 @@ class GroupExecutorNode extends BaseNode {
         try {
             this.properties.isCancelling = true;
             this.updateStatus("已取消");
-            await fetch('/interrupt', { method: 'POST' });
+            await api.interrupt();
+            setTimeout(() => this.resetStatus(), 2000);
         } catch (error) {
             console.error('[GroupExecutor] 取消执行时出错:', error);
             this.updateStatus(`取消失败: ${error.message}`);
@@ -233,7 +234,7 @@ class GroupExecutorNode extends BaseNode {
                 for (let i = 0; i < this.properties.groupCount; i++) {
                     if (this.properties.isCancelling) {
                         console.log('[GroupExecutor] 执行被用户取消');
-                        await fetch('/interrupt', { method: 'POST' });
+                        await api.interrupt();
                         this.updateStatus("已取消");
                         setTimeout(() => this.resetStatus(), 2000);
                         return;

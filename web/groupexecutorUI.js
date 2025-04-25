@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 class GroupExecutorUI {
     static DOCK_MARGIN_X = 0;
-    static DOCK_MARGIN_Y = 40;
+    static DOCK_MARGIN_Y = 60;
     constructor() {
         this.container = null;
         this.isExecuting = false;
@@ -611,7 +611,7 @@ class GroupExecutorUI {
                 for (let i = 0; i < selectedGroups.length; i++) {
                     if (this.isCancelling) {
                         console.log('[GroupExecutorUI] 执行被用户取消');
-                        await fetch('/interrupt', { method: 'POST' });
+                        await api.interrupt();
                         this.updateStatus("已取消");
                         break;
                     }
@@ -690,7 +690,7 @@ class GroupExecutorUI {
         try {
             this.isCancelling = true;
             this.updateStatus("已取消", 0);
-            await fetch('/interrupt', { method: 'POST' });
+            await api.interrupt();
         } catch (error) {
             console.error('[GroupExecutorUI] 取消执行时出错:', error);
             this.updateStatus(`取消失败: ${error.message}`, 0);
@@ -929,7 +929,7 @@ class GroupExecutorUI {
                     try {
                         this.isCancelling = true;
                         this.updateStatus("正在取消...", 0);
-                        await fetch('/interrupt', { method: 'POST' });
+                        await api.interrupt();
                         this.updateStatus("已取消", 0);
                     } catch (error) {
                         console.error('[GroupExecutorUI] 取消执行时出错:', error);
@@ -960,112 +960,21 @@ app.registerExtension({
     async setup() {
         await app.ui.settings.setup;
         
-        // 先添加设置
-        app.ui.settings.addSetting({
-            id: "GroupExecutor.enabled",
-            name: "显示组执行器按钮",
-            type: "boolean",
-            defaultValue: true,
-            onChange: (value) => {
-                const btn = document.querySelector('.group-executor-btn');
-                if (btn) {
-                    btn.style.display = value ? 'block' : 'none';
-                }
-            }
-        });
-        
-        app.ui.settings.addSetting({
-            id: "GroupExecutor.marginX",
-            name: "组执行器水平边距",
-            type: "number",
-            defaultValue: 0,
-            min: 0,
-            max: 100,
-            step: 1,
-            onChange: (value) => {
-                GroupExecutorUI.DOCK_MARGIN_X = value;
-                document.querySelectorAll('.group-executor-ui').forEach(el => {
-                    const instance = el.instance;
-                    if (instance) {
-                        instance.DOCK_MARGIN_X = value;
-                        instance.ensureInViewport();
-                    }
-                });
-            }
-        });
-        app.ui.settings.addSetting({
-            id: "GroupExecutor.marginY",
-            name: "组执行器垂直边距",
-            type: "number",
-            defaultValue: 60,
-            min: 0,
-            max: 100,
-            step: 1,
-            onChange: (value) => {
-                GroupExecutorUI.DOCK_MARGIN_Y = value;
-                document.querySelectorAll('.group-executor-ui').forEach(el => {
-                    const instance = el.instance;
-                    if (instance) {
-                        instance.DOCK_MARGIN_Y = value;
-                        instance.ensureInViewport();
-                    }
-                });
-            }
-        });
-        try {
-            const btn = new (await import("../../scripts/ui/components/button.js")).ComfyButton({
-                icon: "layers-outline",
-                action: () => {
+        // 添加右键菜单选项
+        const origMenu = LGraphCanvas.prototype.getCanvasMenuOptions;
+        LGraphCanvas.prototype.getCanvasMenuOptions = function() {
+            const options = origMenu.call(this);
+            
+            // 在菜单顶部添加组执行器选项（在第一个选项之后）
+            options.splice(1, 0, null); // 在第一个选项后添加分隔线
+            options.splice(2, 0, {
+                content: "⚡ 打开组执行器",
+                callback: () => {
                     new GroupExecutorUI();
-                },
-                tooltip: "组执行器",
-                content: "组执行器",
-                classList: "comfyui-button comfyui-menu-mobile-collapse group-executor-btn"
-            }).element;
-            
-            // 修复: 不传递默认值参数
-            let enabled = true;
-            try {
-                enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled");
-                // 如果返回undefined，则使用默认值
-                if (enabled === undefined) {
-                    enabled = true;
                 }
-            } catch (err) {
-                console.warn("获取组执行器设置失败，使用默认值", err);
-            }
-            
-            btn.style.display = enabled ? 'block' : 'none';
-            app.menu?.actionsGroup.element.after(btn);
-        } catch (error) {
-            console.warn("创建现代UI按钮失败，使用传统按钮", error);
-            const menu = document.querySelector(".comfy-menu");
-            const clearButton = document.getElementById("comfy-clear-button");
-            const groupExecutorButton = document.createElement("button");
-            groupExecutorButton.textContent = "组执行器";
-            groupExecutorButton.classList.add("group-executor-btn");
-            
-            // 修复: 不传递默认值参数
-            let enabled = true;
-            try {
-                enabled = app.ui.settings.getSettingValue("GroupExecutor.enabled");
-                // 如果返回undefined，则使用默认值
-                if (enabled === undefined) {
-                    enabled = true;
-                }
-            } catch (err) {
-                console.warn("获取组执行器设置失败，使用默认值", err);
-            }
-            
-            groupExecutorButton.style.display = enabled ? 'block' : 'none';
-            groupExecutorButton.addEventListener("click", () => {
-                new GroupExecutorUI();
             });
-            if (clearButton) {
-                menu.insertBefore(groupExecutorButton, clearButton);
-            } else {
-                menu.appendChild(groupExecutorButton);
-            }
+            
+            return options;
         }
     }
 });
