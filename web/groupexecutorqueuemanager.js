@@ -113,7 +113,6 @@ api.addEventListener("img-send", async ({ detail }) => {
                     });
                 })).then(loadedImages => {
                     node.imgs = loadedImages;
-                    node.size[1] = Math.max(200, 100 + loadedImages.length * 100);
                     app.canvas.setDirty(true);
                 });
             }
