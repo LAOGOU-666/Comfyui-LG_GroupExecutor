@@ -12,6 +12,17 @@ from comfy.cli_args import args
 from PIL.PngImagePlugin import PngInfo
 import time
 
+CATEGORY_TYPE = "🎈LAOGOU/Group"
+class AnyType(str):
+    """用于表示任意类型的特殊类，在类型比较时总是返回相等"""
+    def __eq__(self, _) -> bool:
+        return True
+
+    def __ne__(self, __value: object) -> bool:
+        return False
+
+any_typ = AnyType("*")
+
 class LG_ImageSender:
     def __init__(self):
         self.output_dir = folder_paths.get_temp_directory()
@@ -30,16 +41,19 @@ class LG_ImageSender:
                 "preview_rgba": ("BOOLEAN", {"default": True, "tooltip": "开启后预览显示RGBA格式，关闭则预览显示RGB格式"})
             },
             "optional": {
-                "masks": ("MASK", {"tooltip": "要发送的遮罩"})
+                "masks": ("MASK", {"tooltip": "要发送的遮罩"}),
+                "signal_opt": (any_typ, {"tooltip": "信号输入，将在处理完成后原样输出"})
             },
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
 
-    RETURN_TYPES = ()
-    OUTPUT_NODE = True
+    RETURN_TYPES = (any_typ,)
+    RETURN_NAMES = ("signal",)
     FUNCTION = "save_images"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
     INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (True,)
+    OUTPUT_NODE = True
 
     @classmethod
     def IS_CHANGED(s, images, filename_prefix, link_id, accumulate, preview_rgba, masks=None, prompt=None, extra_pnginfo=None):
@@ -148,9 +162,10 @@ class LG_ImageReceiver:
             }
         }
 
-    CATEGORY = "🎈LAOGOU"
+
     RETURN_TYPES = ("IMAGE", "MASK")
     RETURN_NAMES = ("images", "masks")
+    CATEGORY = CATEGORY_TYPE
     OUTPUT_IS_LIST = (True, True)
     FUNCTION = "load_image"
 
@@ -224,7 +239,7 @@ class ImageListSplitter:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
     FUNCTION = "split_images"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)  # (images,)
@@ -309,7 +324,7 @@ class MaskListSplitter:
     RETURN_TYPES = ("MASK",)
     RETURN_NAMES = ("masks",)
     FUNCTION = "split_masks"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)  # (masks,)
@@ -396,7 +411,7 @@ class ImageListRepeater:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
     FUNCTION = "repeat_images"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)
@@ -448,7 +463,7 @@ class MaskListRepeater:
     RETURN_TYPES = ("MASK",)            
     RETURN_NAMES = ("masks",)
     FUNCTION = "repeat_masks"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     INPUT_IS_LIST = True
     OUTPUT_IS_LIST = (True,)    
@@ -502,7 +517,7 @@ class LG_FastPreview(SaveImage):
     RETURN_TYPES = ()
     FUNCTION = "save_images"
     
-    CATEGORY = "image"
+    CATEGORY = CATEGORY_TYPE
     DESCRIPTION = "快速预览图像,支持多种格式和质量设置"
 
     def save_images(self, images, format="JPEG", quality=95, prompt=None, extra_pnginfo=None):
@@ -580,7 +595,7 @@ class LG_AccumulatePreview(SaveImage):
     FUNCTION = "accumulate_images"
     OUTPUT_NODE = True
     OUTPUT_IS_LIST = (True, True, False)
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
     DESCRIPTION = "累计图像预览"
 
     def accumulate_images(self, images, mask=None, prompt=None, extra_pnginfo=None, unique_id=None):

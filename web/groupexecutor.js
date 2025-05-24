@@ -46,10 +46,10 @@ class BaseNode extends LGraphNode {
     }
 }
 class GroupExecutorNode extends BaseNode {
-    static type = "GroupExecutor";
-    static title = "Group Executor";
-    static category = "🎈LAOGOU";
-    static _category = "🎈LAOGOU";
+    static type = "🎈GroupExecutor";
+    static title = "🎈Group Executor";
+    static category = "🎈LAOGOU/Group";
+    static _category = "🎈LAOGOU/Group";
     constructor(title = GroupExecutorNode.title) {
         super(title, null);
         this.isVirtualNode = true;

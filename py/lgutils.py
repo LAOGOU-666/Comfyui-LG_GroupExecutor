@@ -3,7 +3,7 @@ import os
 import json
 from aiohttp import web
 
-
+CATEGORY_TYPE = "🎈LAOGOU/Group"
 class GroupExecutorSingle:
     """单组执行节点"""
     
@@ -25,7 +25,7 @@ class GroupExecutorSingle:
     
     RETURN_TYPES = ("SIGNAL",)
     FUNCTION = "execute_group"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     def execute_group(self, group_name, repeat_count, delay_seconds, unique_id, signal=None):
         try:
@@ -66,7 +66,7 @@ class GroupExecutorSender:
     
     RETURN_TYPES = () 
     FUNCTION = "execute"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
     OUTPUT_NODE = True
 
     def execute(self, signal, unique_id):
@@ -114,7 +114,7 @@ class GroupExecutorRepeater:
     
     RETURN_TYPES = ("SIGNAL",)
     FUNCTION = "repeat"
-    CATEGORY = "🎈LAOGOU"
+    CATEGORY = CATEGORY_TYPE
 
     def repeat(self, signal, repeat_count, group_delay):
         try:
