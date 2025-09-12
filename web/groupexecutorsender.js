@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { queueManager } from "./queue_utils.js";
 
 app.registerExtension({
     name: "GroupExecutorSender",
@@ -270,18 +271,17 @@ app.registerExtension({
 
                                     const nodeIds = outputNodes.map(n => n.id);
                                     
-                                    if (rgthree?.queueOutputNodes) {
-                                        try {
-                                            if (node.properties.isCancelling) {
-                                                break;
-                                            }
-                                            await rgthree.queueOutputNodes(nodeIds);
-                                            await node.waitForQueue();
-                                        } catch (queueError) {
-                                            if (node.properties.isCancelling) {
-                                                break;
-                                            }
-                                            console.warn(`[GroupExecutorSender] rgthree执行失败，使用默认方式:`, queueError);
+                                    try {
+                                        if (node.properties.isCancelling) {
+                                            break;
+                                        }
+                                        await queueManager.queueOutputNodes(nodeIds);
+                                        await node.waitForQueue();
+                                    } catch (queueError) {
+                                        if (node.properties.isCancelling) {
+                                            break;
+                                        }
+                                        console.warn(`[GroupExecutorSender] 队列执行失败，使用默认方式:`, queueError);
                                             for (const n of outputNodes) {
                                                 if (node.properties.isCancelling) {
                                                     break;
@@ -292,17 +292,7 @@ app.registerExtension({
                                                 }
                                             }
                                         }
-                                    } else {
-                                        for (const n of outputNodes) {
-                                            if (node.properties.isCancelling) {
-                                                break;
-                                            }
-                                            if (n.triggerQueue) {
-                                                await n.triggerQueue();
-                                                await node.waitForQueue();
-                                            }
-                                        }
-                                    }
+                                    
 
                                     if (delay_seconds > 0 && (i < repeat_count - 1 || currentTask < totalTasks) && !node.properties.isCancelling) {
                                         node.updateStatus(

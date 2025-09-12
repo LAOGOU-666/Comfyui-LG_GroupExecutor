@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { queueManager } from "./queue_utils.js";
 class GroupExecutorUI {
     static DOCK_MARGIN_X = 0;
     static DOCK_MARGIN_Y = 60;
@@ -666,13 +667,10 @@ class GroupExecutorUI {
         }
         const nodeIds = outputNodes.map(n => n.id);
         try {
-            if (!rgthree || !rgthree.queueOutputNodes) {
-                throw new Error('rgthree.queueOutputNodes 不可用');
-            }
-            await rgthree.queueOutputNodes(nodeIds);
+            await queueManager.queueOutputNodes(nodeIds);
             await this.waitForQueue();
         } catch (queueError) {
-            console.warn(`[GroupExecutorUI] rgthree执行失败，使用默认方式:`, queueError);
+            console.warn(`[GroupExecutorUI] 队列执行失败，使用默认方式:`, queueError);
             for (const n of outputNodes) {
                 if (this.isCancelling) return;
                 if (n.triggerQueue) {

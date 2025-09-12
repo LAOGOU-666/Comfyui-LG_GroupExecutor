@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 import { api } from "../../scripts/api.js";
+import { queueManager } from "./queue_utils.js";
 class BaseNode extends LGraphNode {
     static defaultComfyClass = "BaseNode";
      constructor(title, comfyClass) {
@@ -248,21 +249,18 @@ class GroupExecutorNode extends BaseNode {
                     const outputNodes = this.getGroupOutputNodes(groupName);
                     if (outputNodes && outputNodes.length > 0) {
                         try {
-                            if (!rgthree || !rgthree.queueOutputNodes) {
-                                throw new Error('rgthree.queueOutputNodes 不可用');
-                            }
                             const nodeIds = outputNodes.map(n => n.id);
                             try {
                                 if (this.properties.isCancelling) {
                                     return;
                                 }
-                                await rgthree.queueOutputNodes(nodeIds);
+                                await queueManager.queueOutputNodes(nodeIds);
                                 await this.waitForQueue();
                             } catch (queueError) {
                                 if (this.properties.isCancelling) {
                                     return;
                                 }
-                                console.warn(`[GroupExecutorSender] rgthree执行失败，使用默认方式:`, queueError);
+                                console.warn(`[GroupExecutorSender] 队列执行失败，使用默认方式:`, queueError);
                                 for (const n of outputNodes) {
                                     if (this.properties.isCancelling) {
                                         return;
