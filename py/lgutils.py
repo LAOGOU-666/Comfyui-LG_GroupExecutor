@@ -110,48 +110,86 @@ def build_prompt_for_nodes(workflow, output_node_ids):
             
             # 处理 widget 值
             widgets_values = node.get("widgets_values", [])
+            node_input_list = node.get("inputs", [])
+            node_type = node["type"]
+            
             if widgets_values:
-                # 获取节点类的输入定义
-                node_type = node["type"]
+                # 获取节点类的完整输入定义
                 if node_type in nodes.NODE_CLASS_MAPPINGS:
                     node_class = nodes.NODE_CLASS_MAPPINGS[node_type]
                     if hasattr(node_class, "INPUT_TYPES"):
                         try:
-                            try:
-                                input_types_result = node_class.INPUT_TYPES()
-                            except:
-                                # 有些节点的 INPUT_TYPES 需要参数
-                                input_types_result = {}
+                            input_types_result = node_class.INPUT_TYPES()
+                        except:
+                            input_types_result = {}
+                        
+                        required_inputs = input_types_result.get("required", {})
+                        optional_inputs = input_types_result.get("optional", {})
+                        
+                        # 创建一个集合来记录哪些输入有 link
+                        inputs_with_links = set()
+                        inputs_with_widgets = {}  # 记录有显式 widget 的输入
+                        for input_item in node_input_list:
+                            name = input_item.get("name")
+                            if "link" in input_item:
+                                inputs_with_links.add(name)
+                            if "widget" in input_item:
+                                inputs_with_widgets[name] = input_item["widget"]
+                        
+                        # 按照节点类定义的顺序遍历所有输入
+                        widget_index = 0
+                        
+                        # 先处理 required 输入
+                        for param_name, param_def in required_inputs.items():
+                            # 如果这个输入有 link，跳过
+                            if param_name in node_inputs:
+                                # 但如果它也有显式 widget，需要消费 widgets_values
+                                if param_name in inputs_with_widgets:
+                                    widget_index += 1
+                                    # 检查 control_after_generate
+                                    if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
+                                        param_config = param_def[1]
+                                        if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
+                                            widget_index += 1
+                                continue
                             
-                            required_inputs = input_types_result.get("required", {})
-                            optional_inputs = input_types_result.get("optional", {})
-                            
-                            # 收集所有输入定义（按顺序）
-                            all_inputs = {}
-                            all_inputs.update(required_inputs)
-                            all_inputs.update(optional_inputs)
-                            
-                            # 将 widget 值映射到参数名
-                            widget_index = 0
-                            for param_name, param_def in all_inputs.items():
-                                if param_name not in node_inputs:  # 只处理未连接的输入
-                                    if widget_index < len(widgets_values):
-                                        value = widgets_values[widget_index]
-                                        node_inputs[param_name] = value
+                            # 从 widgets_values 中读取值
+                            if widget_index < len(widgets_values):
+                                value = widgets_values[widget_index]
+                                node_inputs[param_name] = value
+                                widget_index += 1
+                                
+                                # 检查是否有 control_after_generate
+                                if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
+                                    param_config = param_def[1]
+                                    if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
                                         widget_index += 1
-                                        
-                                        # 处理 control_after_generate（额外的 widget）
-                                        # param_def 格式: ("TYPE", {config}) 或 ("TYPE",)
-                                        if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
-                                            param_config = param_def[1]
-                                            if isinstance(param_config, dict):
-                                                if param_config.get("control_after_generate", False):
-                                                    # 跳过 control_after_generate widget（在 widgets_values 中占一个位置）
-                                                    widget_index += 1
-                        except Exception as widget_error:
-                            print(f"[GroupExecutor] 处理节点 {node_id} 的 widget 值时出错: {widget_error}")
-                            import traceback
-                            traceback.print_exc()
+                        
+                        # 再处理 optional 输入
+                        for param_name, param_def in optional_inputs.items():
+                            # 如果这个输入有 link，跳过
+                            if param_name in node_inputs:
+                                # 但如果它也有显式 widget，需要消费 widgets_values
+                                if param_name in inputs_with_widgets:
+                                    widget_index += 1
+                                    # 检查 control_after_generate
+                                    if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
+                                        param_config = param_def[1]
+                                        if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
+                                            widget_index += 1
+                                continue
+                            
+                            # 从 widgets_values 中读取值
+                            if widget_index < len(widgets_values):
+                                value = widgets_values[widget_index]
+                                node_inputs[param_name] = value
+                                widget_index += 1
+                                
+                                # 检查是否有 control_after_generate
+                                if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
+                                    param_config = param_def[1]
+                                    if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
+                                        widget_index += 1
             
             prompt[str(node_id)] = {
                 "class_type": node["type"],
