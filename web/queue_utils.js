@@ -118,6 +118,10 @@ class QueueManager {
   recursiveAddNodes(nodeId, oldOutput, newOutput) {
     let currentId = nodeId;
     let currentNode = oldOutput[currentId];
+    if (!currentNode) {
+      console.warn(`[QueueManager] 节点 ${currentId} 在输出中不存在`);
+      return newOutput;
+    }
     if (newOutput[currentId] == null) {
       newOutput[currentId] = currentNode;
       for (const inputValue of Object.values(currentNode.inputs || [])) {
