@@ -57,37 +57,62 @@ def build_prompt_for_nodes(workflow, output_node_ids):
         nodes_list = workflow.get("nodes", [])
         links_list = workflow.get("links", [])
 
-        # 构建节点映射（排除禁用的节点）
+        # 构建节点映射（只排除静音的节点）
         node_map = {}
-        disabled_count = 0
+        muted_nodes = set()
+        bypassed_nodes = set()
+
         for n in nodes_list:
-            # 检查节点的 mode 属性，如果是 2 或 4 表示禁用
+            # 检查节点的 mode 属性
             # mode: 0=ALWAYS, 2=MUTE, 4=BYPASS
             mode = n.get("mode", 0)
-            if mode not in [2, 4]:  # 只包含启用的节点
-                node_map[n["id"]] = n
-            else:
-                disabled_count += 1
+            node_id = n["id"]
 
-        if disabled_count > 0:
-            print(f"[GroupExecutor] 已过滤 {disabled_count} 个禁用的节点")
+            if mode == 2:  # MUTE - 完全禁用
+                muted_nodes.add(node_id)
+            elif mode == 4:  # BYPASS - 旁路，保留在映射中但标记
+                bypassed_nodes.add(node_id)
+                node_map[node_id] = n
+            else:  # ALWAYS - 正常节点
+                node_map[node_id] = n
 
-        # 构建输入连接映射（只包含启用节点之间的连接）
+        if muted_nodes:
+            print(f"[GroupExecutor] 已过滤 {len(muted_nodes)} 个静音节点")
+        if bypassed_nodes:
+            print(f"[GroupExecutor] 检测到 {len(bypassed_nodes)} 个旁路节点")
+
+        # 构建输入连接映射，处理旁路节点
         input_connections = {}
+        bypass_mappings = {}  # 记录旁路节点的输入到输出映射
+
         for link in links_list:
             # link 格式: [link_id, source_node, source_output, target_node, target_input, type]
             if len(link) >= 6:
                 source_node = link[1]
                 target_node = link[3]
-                # 只有当源节点和目标节点都启用时才添加连接
-                if source_node in node_map and target_node in node_map:
-                    if target_node not in input_connections:
-                        input_connections[target_node] = []
-                    input_connections[target_node].append({
+
+                # 跳过涉及静音节点的连接
+                if source_node in muted_nodes or target_node in muted_nodes:
+                    continue
+
+                # 如果目标节点是旁路节点，记录其输入连接用于后续重定向
+                if target_node in bypassed_nodes:
+                    if target_node not in bypass_mappings:
+                        bypass_mappings[target_node] = []
+                    bypass_mappings[target_node].append({
                         "input_index": link[4],
                         "source_node": source_node,
                         "source_output": link[2]
                     })
+
+                # 正常添加连接
+                if target_node not in input_connections:
+                    input_connections[target_node] = []
+                input_connections[target_node].append({
+                    "input_index": link[4],
+                    "source_node": source_node,
+                    "source_output": link[2]
+                })
 
         # 递归收集依赖节点
         required_nodes = set()
@@ -108,20 +133,40 @@ def build_prompt_for_nodes(workflow, output_node_ids):
         for output_id in output_node_ids:
             collect_dependencies(output_id)
         
-        # 构建 prompt
+        # 构建 prompt（跳过旁路节点）
         prompt = {}
         for node_id in required_nodes:
+            # 跳过旁路节点，不生成处理指令
+            if node_id in bypassed_nodes:
+                continue
+
             node = node_map[node_id]
             node_inputs = {}
             
             # 处理连接输入
             if node_id in input_connections:
                 for conn in input_connections[node_id]:
-                    # 找到输入名称
-                    node_input_list = node.get("inputs", [])
-                    if conn["input_index"] < len(node_input_list):
-                        input_name = node_input_list[conn["input_index"]]["name"]
-                        node_inputs[input_name] = [str(conn["source_node"]), conn["source_output"]]
+                    source_node = conn["source_node"]
+                    source_output = conn["source_output"]
+
+                    # 如果源节点是旁路节点，追溯到实际的源节点
+                    while source_node in bypassed_nodes:
+                        if source_node in bypass_mappings and bypass_mappings[source_node]:
+                            # 使用旁路节点的第一个输入作为源
+                            first_input = bypass_mappings[source_node][0]
+                            source_node = first_input["source_node"]
+                            source_output = first_input["source_output"]
+                        else:
+                            # 旁路节点没有输入，跳过这个连接
+                            break
+
+                    # 如果源节点不是静音节点，添加连接
+                    if source_node not in muted_nodes:
+                        # 找到输入名称
+                        node_input_list = node.get("inputs", [])
+                        if conn["input_index"] < len(node_input_list):
+                            input_name = node_input_list[conn["input_index"]]["name"]
+                            node_inputs[input_name] = [str(source_node), source_output]
             
             # 处理 widget 值
             widgets_values = node.get("widgets_values", [])
@@ -332,11 +377,11 @@ class GroupExecutorBackend:
                     print(f"[GroupExecutor] 未找到组: {group_name}")
                     continue
                 
-                # 获取组内节点（排除禁用的节点）
+                # 获取组内节点（只排除静音的节点，保留旁路节点）
                 all_nodes = workflow.get("nodes", [])
                 nodes_in_group = [
                     n for n in all_nodes
-                    if is_node_in_group(n, group) and n.get("mode", 0) not in [2, 4]
+                    if is_node_in_group(n, group) and n.get("mode", 0) != 2
                 ]
 
                 # 筛选输出节点
