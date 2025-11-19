@@ -83,35 +83,37 @@ def build_prompt_for_nodes(workflow, output_node_ids):
 
         # 构建输入连接映射，处理旁路节点
         input_connections = {}
-        bypass_mappings = {}  # 记录旁路节点的输入到输出映射
+        bypass_mappings = {}  # 记录旁路节点的输入映射 {node_id: {input_index: {source_node, source_output}}}
 
         for link in links_list:
             # link 格式: [link_id, source_node, source_output, target_node, target_input, type]
             if len(link) >= 6:
                 source_node = link[1]
+                source_output = link[2]
                 target_node = link[3]
+                target_input = link[4]
 
                 # 跳过涉及静音节点的连接
                 if source_node in muted_nodes or target_node in muted_nodes:
                     continue
 
                 # 如果目标节点是旁路节点，记录其输入连接用于后续重定向
+                # 使用字典映射输入索引到源节点，这样可以支持多个输入
                 if target_node in bypassed_nodes:
                     if target_node not in bypass_mappings:
-                        bypass_mappings[target_node] = []
-                    bypass_mappings[target_node].append({
-                        "input_index": link[4],
+                        bypass_mappings[target_node] = {}
+                    bypass_mappings[target_node][target_input] = {
                         "source_node": source_node,
-                        "source_output": link[2]
-                    })
+                        "source_output": source_output
+                    }
 
                 # 正常添加连接
                 if target_node not in input_connections:
                     input_connections[target_node] = []
                 input_connections[target_node].append({
-                    "input_index": link[4],
+                    "input_index": target_input,
                     "source_node": source_node,
-                    "source_output": link[2]
+                    "source_output": source_output
                 })
 
         # 递归收集依赖节点
@@ -150,23 +152,44 @@ def build_prompt_for_nodes(workflow, output_node_ids):
                     source_output = conn["source_output"]
 
                     # 如果源节点是旁路节点，追溯到实际的源节点
-                    while source_node in bypassed_nodes:
-                        if source_node in bypass_mappings and bypass_mappings[source_node]:
-                            # 使用旁路节点的第一个输入作为源
-                            first_input = bypass_mappings[source_node][0]
-                            source_node = first_input["source_node"]
-                            source_output = first_input["source_output"]
+                    # 旁路节点的逻辑：输出索引对应输入索引（0->0, 1->1, ...）
+                    max_iterations = 10  # 防止无限循环
+                    iteration = 0
+                    while source_node in bypassed_nodes and iteration < max_iterations:
+                        iteration += 1
+                        if source_node in bypass_mappings:
+                            # 旁路节点的输出索引对应其输入索引
+                            # 例如：如果请求输出0，则查找输入0的源
+                            if source_output in bypass_mappings[source_node]:
+                                mapping = bypass_mappings[source_node][source_output]
+                                source_node = mapping["source_node"]
+                                source_output = mapping["source_output"]
+                            else:
+                                # 旁路节点没有对应的输入，尝试使用第一个可用输入
+                                if bypass_mappings[source_node]:
+                                    first_key = next(iter(bypass_mappings[source_node]))
+                                    mapping = bypass_mappings[source_node][first_key]
+                                    source_node = mapping["source_node"]
+                                    source_output = mapping["source_output"]
+                                else:
+                                    # 旁路节点没有任何输入，跳过这个连接
+                                    break
                         else:
-                            # 旁路节点没有输入，跳过这个连接
+                            # 旁路节点没有输入映射，跳过这个连接
                             break
 
-                    # 如果源节点不是静音节点，添加连接
-                    if source_node not in muted_nodes:
-                        # 找到输入名称
-                        node_input_list = node.get("inputs", [])
-                        if conn["input_index"] < len(node_input_list):
-                            input_name = node_input_list[conn["input_index"]]["name"]
-                            node_inputs[input_name] = [str(source_node), source_output]
+                    # 如果源节点是静音节点或旁路节点（没有输入），跳过这个连接
+                    if source_node in muted_nodes or source_node in bypassed_nodes:
+                        continue
+
+                    # 找到输入名称
+                    node_input_list = node.get("inputs", [])
+                    if conn["input_index"] < len(node_input_list):
+                        input_name = node_input_list[conn["input_index"]]["name"]
+                        node_inputs[input_name] = [str(source_node), source_output]
+                    else:
+                        # 索引越界，记录警告但继续处理
+                        print(f"[GroupExecutor] 警告: 节点 {node_id} ({node.get('type', 'Unknown')}) 的输入索引 {conn['input_index']} 超出范围 (共 {len(node_input_list)} 个输入)")
             
             # 处理 widget 值
             widgets_values = node.get("widgets_values", [])
