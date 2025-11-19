@@ -56,39 +56,54 @@ def build_prompt_for_nodes(workflow, output_node_ids):
     try:
         nodes_list = workflow.get("nodes", [])
         links_list = workflow.get("links", [])
-        
-        # 构建节点映射
-        node_map = {n["id"]: n for n in nodes_list}
-        
-        # 构建输入连接映射
+
+        # 构建节点映射（排除禁用的节点）
+        node_map = {}
+        disabled_count = 0
+        for n in nodes_list:
+            # 检查节点的 mode 属性，如果是 2 或 4 表示禁用
+            # mode: 0=ALWAYS, 2=MUTE, 4=BYPASS
+            mode = n.get("mode", 0)
+            if mode not in [2, 4]:  # 只包含启用的节点
+                node_map[n["id"]] = n
+            else:
+                disabled_count += 1
+
+        if disabled_count > 0:
+            print(f"[GroupExecutor] 已过滤 {disabled_count} 个禁用的节点")
+
+        # 构建输入连接映射（只包含启用节点之间的连接）
         input_connections = {}
         for link in links_list:
             # link 格式: [link_id, source_node, source_output, target_node, target_input, type]
             if len(link) >= 6:
+                source_node = link[1]
                 target_node = link[3]
-                if target_node not in input_connections:
-                    input_connections[target_node] = []
-                input_connections[target_node].append({
-                    "input_index": link[4],
-                    "source_node": link[1],
-                    "source_output": link[2]
-                })
-        
+                # 只有当源节点和目标节点都启用时才添加连接
+                if source_node in node_map and target_node in node_map:
+                    if target_node not in input_connections:
+                        input_connections[target_node] = []
+                    input_connections[target_node].append({
+                        "input_index": link[4],
+                        "source_node": source_node,
+                        "source_output": link[2]
+                    })
+
         # 递归收集依赖节点
         required_nodes = set()
-        
+
         def collect_dependencies(node_id):
             if node_id in required_nodes:
                 return
             if node_id not in node_map:
                 return
             required_nodes.add(node_id)
-            
+
             # 递归收集输入节点
             if node_id in input_connections:
                 for conn in input_connections[node_id]:
                     collect_dependencies(conn["source_node"])
-        
+
         # 从所有输出节点开始收集
         for output_id in output_node_ids:
             collect_dependencies(output_id)
@@ -317,10 +332,13 @@ class GroupExecutorBackend:
                     print(f"[GroupExecutor] 未找到组: {group_name}")
                     continue
                 
-                # 获取组内节点
+                # 获取组内节点（排除禁用的节点）
                 all_nodes = workflow.get("nodes", [])
-                nodes_in_group = [n for n in all_nodes if is_node_in_group(n, group)]
-                
+                nodes_in_group = [
+                    n for n in all_nodes
+                    if is_node_in_group(n, group) and n.get("mode", 0) not in [2, 4]
+                ]
+
                 # 筛选输出节点
                 output_nodes = [n for n in nodes_in_group if is_output_node(n.get("type", ""))]
                 
