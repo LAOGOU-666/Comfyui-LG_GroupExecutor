@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 import asyncio
+import random
 from aiohttp import web
 import execution
 import nodes
@@ -13,278 +14,30 @@ CATEGORY_TYPE = "🎈LAOGOU/Group"
 
 # ============ 后台执行辅助函数 ============
 
-def is_output_node(node_type):
-    """通过检查节点类定义判断是否为输出节点"""
-    try:
-        if node_type in nodes.NODE_CLASS_MAPPINGS:
-            node_class = nodes.NODE_CLASS_MAPPINGS[node_type]
-            return getattr(node_class, "OUTPUT_NODE", False)
-    except Exception as e:
-        print(f"[GroupExecutor] 检查输出节点失败 {node_type}: {e}")
-    return False
+def recursive_add_nodes(node_id, old_output, new_output):
+    """从输出节点递归收集所有依赖节点（与前端 queueManager.recursiveAddNodes 逻辑一致）"""
+    current_id = str(node_id)
+    current_node = old_output.get(current_id)
+    
+    if not current_node:
+        return new_output
+    
+    if current_id not in new_output:
+        new_output[current_id] = current_node
+        inputs = current_node.get("inputs", {})
+        for input_value in inputs.values():
+            if isinstance(input_value, list) and len(input_value) >= 1:
+                # input_value 格式: [source_node_id, output_index]
+                recursive_add_nodes(input_value[0], old_output, new_output)
+    
+    return new_output
 
-def is_node_in_group(node, group):
-    """判断节点是否在组的边界框内（使用重叠检测）"""
-    try:
-        node_pos = node.get("pos", [0, 0])
-        node_size = node.get("size", [140, 80])
-        
-        # 节点边界框
-        node_x1 = node_pos[0]
-        node_y1 = node_pos[1]
-        node_x2 = node_pos[0] + node_size[0]
-        node_y2 = node_pos[1] + node_size[1]
-        
-        # 组边界框 [x, y, width, height]
-        group_bounding = group.get("bounding", [0, 0, 0, 0])
-        group_x1 = group_bounding[0]
-        group_y1 = group_bounding[1]
-        group_x2 = group_bounding[0] + group_bounding[2]
-        group_y2 = group_bounding[1] + group_bounding[3]
-        
-        # 检查是否重叠（LiteGraph 的重叠逻辑）
-        return not (node_x2 < group_x1 or 
-                   node_x1 > group_x2 or 
-                   node_y2 < group_y1 or 
-                   node_y1 > group_y2)
-    except Exception as e:
-        print(f"[GroupExecutor] 检查节点是否在组内失败: {e}")
-        return False
-
-def build_prompt_for_nodes(workflow, output_node_ids):
-    """从输出节点反向构建包含所有依赖的 prompt"""
-    try:
-        nodes_list = workflow.get("nodes", [])
-        links_list = workflow.get("links", [])
-
-        # 构建节点映射（只排除静音的节点）
-        node_map = {}
-        muted_nodes = set()
-        bypassed_nodes = set()
-
-        for n in nodes_list:
-            # 检查节点的 mode 属性
-            # mode: 0=ALWAYS, 2=MUTE, 4=BYPASS
-            mode = n.get("mode", 0)
-            node_id = n["id"]
-
-            if mode == 2:  # MUTE - 完全禁用
-                muted_nodes.add(node_id)
-            elif mode == 4:  # BYPASS - 旁路，保留在映射中但标记
-                bypassed_nodes.add(node_id)
-                node_map[node_id] = n
-            else:  # ALWAYS - 正常节点
-                node_map[node_id] = n
-
-        if muted_nodes:
-            print(f"[GroupExecutor] 已过滤 {len(muted_nodes)} 个静音节点")
-        if bypassed_nodes:
-            print(f"[GroupExecutor] 检测到 {len(bypassed_nodes)} 个旁路节点")
-
-        # 构建输入连接映射，处理旁路节点
-        input_connections = {}
-        bypass_mappings = {}  # 记录旁路节点的输入映射 {node_id: {input_index: {source_node, source_output}}}
-
-        for link in links_list:
-            # link 格式: [link_id, source_node, source_output, target_node, target_input, type]
-            if len(link) >= 6:
-                source_node = link[1]
-                source_output = link[2]
-                target_node = link[3]
-                target_input = link[4]
-
-                # 跳过涉及静音节点的连接
-                if source_node in muted_nodes or target_node in muted_nodes:
-                    continue
-
-                # 如果目标节点是旁路节点，记录其输入连接用于后续重定向
-                # 使用字典映射输入索引到源节点，这样可以支持多个输入
-                if target_node in bypassed_nodes:
-                    if target_node not in bypass_mappings:
-                        bypass_mappings[target_node] = {}
-                    bypass_mappings[target_node][target_input] = {
-                        "source_node": source_node,
-                        "source_output": source_output
-                    }
-
-                # 正常添加连接
-                if target_node not in input_connections:
-                    input_connections[target_node] = []
-                input_connections[target_node].append({
-                    "input_index": target_input,
-                    "source_node": source_node,
-                    "source_output": source_output
-                })
-
-        # 递归收集依赖节点
-        required_nodes = set()
-
-        def collect_dependencies(node_id):
-            if node_id in required_nodes:
-                return
-            if node_id not in node_map:
-                return
-            required_nodes.add(node_id)
-
-            # 递归收集输入节点
-            if node_id in input_connections:
-                for conn in input_connections[node_id]:
-                    collect_dependencies(conn["source_node"])
-
-        # 从所有输出节点开始收集
-        for output_id in output_node_ids:
-            collect_dependencies(output_id)
-        
-        # 构建 prompt（跳过旁路节点）
-        prompt = {}
-        for node_id in required_nodes:
-            # 跳过旁路节点，不生成处理指令
-            if node_id in bypassed_nodes:
-                continue
-
-            node = node_map[node_id]
-            node_inputs = {}
-            
-            # 处理连接输入
-            if node_id in input_connections:
-                for conn in input_connections[node_id]:
-                    source_node = conn["source_node"]
-                    source_output = conn["source_output"]
-
-                    # 如果源节点是旁路节点，追溯到实际的源节点
-                    # 旁路节点的逻辑：输出索引对应输入索引（0->0, 1->1, ...）
-                    max_iterations = 10  # 防止无限循环
-                    iteration = 0
-                    while source_node in bypassed_nodes and iteration < max_iterations:
-                        iteration += 1
-                        if source_node in bypass_mappings:
-                            # 旁路节点的输出索引对应其输入索引
-                            # 例如：如果请求输出0，则查找输入0的源
-                            if source_output in bypass_mappings[source_node]:
-                                mapping = bypass_mappings[source_node][source_output]
-                                source_node = mapping["source_node"]
-                                source_output = mapping["source_output"]
-                            else:
-                                # 旁路节点没有对应的输入，尝试使用第一个可用输入
-                                if bypass_mappings[source_node]:
-                                    first_key = next(iter(bypass_mappings[source_node]))
-                                    mapping = bypass_mappings[source_node][first_key]
-                                    source_node = mapping["source_node"]
-                                    source_output = mapping["source_output"]
-                                else:
-                                    # 旁路节点没有任何输入，跳过这个连接
-                                    break
-                        else:
-                            # 旁路节点没有输入映射，跳过这个连接
-                            break
-
-                    # 如果源节点是静音节点或旁路节点（没有输入），跳过这个连接
-                    if source_node in muted_nodes or source_node in bypassed_nodes:
-                        continue
-
-                    # 找到输入名称
-                    node_input_list = node.get("inputs", [])
-                    if conn["input_index"] < len(node_input_list):
-                        input_name = node_input_list[conn["input_index"]]["name"]
-                        node_inputs[input_name] = [str(source_node), source_output]
-                    else:
-                        # 索引越界，记录警告但继续处理
-                        print(f"[GroupExecutor] 警告: 节点 {node_id} ({node.get('type', 'Unknown')}) 的输入索引 {conn['input_index']} 超出范围 (共 {len(node_input_list)} 个输入)")
-            
-            # 处理 widget 值
-            widgets_values = node.get("widgets_values", [])
-            node_input_list = node.get("inputs", [])
-            node_type = node["type"]
-            
-            if widgets_values:
-                # 获取节点类的完整输入定义
-                if node_type in nodes.NODE_CLASS_MAPPINGS:
-                    node_class = nodes.NODE_CLASS_MAPPINGS[node_type]
-                    if hasattr(node_class, "INPUT_TYPES"):
-                        try:
-                            input_types_result = node_class.INPUT_TYPES()
-                        except:
-                            input_types_result = {}
-                        
-                        required_inputs = input_types_result.get("required", {})
-                        optional_inputs = input_types_result.get("optional", {})
-                        
-                        # 创建一个集合来记录哪些输入有 link
-                        inputs_with_links = set()
-                        inputs_with_widgets = {}  # 记录有显式 widget 的输入
-                        for input_item in node_input_list:
-                            name = input_item.get("name")
-                            if "link" in input_item:
-                                inputs_with_links.add(name)
-                            if "widget" in input_item:
-                                inputs_with_widgets[name] = input_item["widget"]
-                        
-                        # 按照节点类定义的顺序遍历所有输入
-                        widget_index = 0
-                        
-                        # 先处理 required 输入
-                        for param_name, param_def in required_inputs.items():
-                            # 如果这个输入有 link，跳过
-                            if param_name in node_inputs:
-                                # 但如果它也有显式 widget，需要消费 widgets_values
-                                if param_name in inputs_with_widgets:
-                                    widget_index += 1
-                                    # 检查 control_after_generate
-                                    if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
-                                        param_config = param_def[1]
-                                        if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
-                                            widget_index += 1
-                                continue
-                            
-                            # 从 widgets_values 中读取值
-                            if widget_index < len(widgets_values):
-                                value = widgets_values[widget_index]
-                                node_inputs[param_name] = value
-                                widget_index += 1
-                                
-                                # 检查是否有 control_after_generate
-                                if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
-                                    param_config = param_def[1]
-                                    if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
-                                        widget_index += 1
-                        
-                        # 再处理 optional 输入
-                        for param_name, param_def in optional_inputs.items():
-                            # 如果这个输入有 link，跳过
-                            if param_name in node_inputs:
-                                # 但如果它也有显式 widget，需要消费 widgets_values
-                                if param_name in inputs_with_widgets:
-                                    widget_index += 1
-                                    # 检查 control_after_generate
-                                    if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
-                                        param_config = param_def[1]
-                                        if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
-                                            widget_index += 1
-                                continue
-                            
-                            # 从 widgets_values 中读取值
-                            if widget_index < len(widgets_values):
-                                value = widgets_values[widget_index]
-                                node_inputs[param_name] = value
-                                widget_index += 1
-                                
-                                # 检查是否有 control_after_generate
-                                if isinstance(param_def, (list, tuple)) and len(param_def) > 1:
-                                    param_config = param_def[1]
-                                    if isinstance(param_config, dict) and param_config.get("control_after_generate", False):
-                                        widget_index += 1
-            
-            prompt[str(node_id)] = {
-                "class_type": node["type"],
-                "inputs": node_inputs
-            }
-        
-        return prompt
-    except Exception as e:
-        print(f"[GroupExecutor] 构建 prompt 失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
+def filter_prompt_for_nodes(full_prompt, output_node_ids):
+    """从完整的 API prompt 中筛选出指定输出节点及其依赖"""
+    filtered_prompt = {}
+    for node_id in output_node_ids:
+        recursive_add_nodes(str(node_id), full_prompt, filtered_prompt)
+    return filtered_prompt
 
 class GroupExecutorBackend:
     """后台执行管理器"""
@@ -329,15 +82,21 @@ class GroupExecutorBackend:
                 if task_info.get("status") == "running" and not task_info.get("cancel"):
                     task_info["cancel"] = True
     
-    def execute_in_background(self, node_id, execution_list, workflow):
-        """启动后台执行线程"""
+    def execute_in_background(self, node_id, execution_list, full_api_prompt):
+        """启动后台执行线程
+        
+        Args:
+            node_id: 节点 ID
+            execution_list: 执行列表，每项包含 group_name, repeat_count, delay_seconds, output_node_ids
+            full_api_prompt: 前端生成的完整 API prompt（已经是正确格式）
+        """
         with self.task_lock:
             if node_id in self.running_tasks and self.running_tasks[node_id].get("status") == "running":
                 return False
             
             thread = threading.Thread(
                 target=self._execute_task,
-                args=(node_id, execution_list, workflow),
+                args=(node_id, execution_list, full_api_prompt),
                 daemon=True
             )
             thread.start()
@@ -365,18 +124,25 @@ class GroupExecutorBackend:
                 return True
             return False
     
-    def _execute_task(self, node_id, execution_list, workflow):
-        """后台执行任务的核心逻辑"""
+    def _execute_task(self, node_id, execution_list, full_api_prompt):
+        """后台执行任务的核心逻辑
+        
+        Args:
+            node_id: 节点 ID
+            execution_list: 执行列表
+            full_api_prompt: 前端生成的完整 API prompt
+        """
         try:
-            for execution in execution_list:
+            for exec_item in execution_list:
                 # 检查取消标志
                 if self.running_tasks.get(node_id, {}).get("cancel"):
                     print(f"[GroupExecutor] 任务被取消")
                     break
                 
-                group_name = execution.get("group_name", "")
-                repeat_count = int(execution.get("repeat_count", 1))
-                delay_seconds = float(execution.get("delay_seconds", 0))
+                group_name = exec_item.get("group_name", "")
+                repeat_count = int(exec_item.get("repeat_count", 1))
+                delay_seconds = float(exec_item.get("delay_seconds", 0))
+                output_node_ids = exec_item.get("output_node_ids", [])
                 
                 # 处理延迟
                 if group_name == "__delay__":
@@ -389,29 +155,8 @@ class GroupExecutorBackend:
                             time.sleep(0.5)
                     continue
                 
-                if not group_name:
-                    continue
-                
-                # 查找组
-                groups = workflow.get("groups", [])
-                group = next((g for g in groups if g.get("title") == group_name), None)
-                
-                if not group:
-                    print(f"[GroupExecutor] 未找到组: {group_name}")
-                    continue
-                
-                # 获取组内节点（只排除静音的节点，保留旁路节点）
-                all_nodes = workflow.get("nodes", [])
-                nodes_in_group = [
-                    n for n in all_nodes
-                    if is_node_in_group(n, group) and n.get("mode", 0) != 2
-                ]
-
-                # 筛选输出节点
-                output_nodes = [n for n in nodes_in_group if is_output_node(n.get("type", ""))]
-                
-                if not output_nodes:
-                    print(f"[GroupExecutor] 组 '{group_name}' 中没有输出节点")
+                if not group_name or not output_node_ids:
+                    print(f"[GroupExecutor] 跳过无效执行项: group_name={group_name}, output_node_ids={output_node_ids}")
                     continue
                 
                 # 执行 repeat_count 次
@@ -423,20 +168,22 @@ class GroupExecutorBackend:
                     if repeat_count > 1:
                         print(f"[GroupExecutor] 执行组 '{group_name}' ({i+1}/{repeat_count})")
                     
-                    # 构建 prompt
-                    output_ids = [n["id"] for n in output_nodes]
-                    prompt = build_prompt_for_nodes(workflow, output_ids)
+                    # 从完整 prompt 中筛选出该组需要的节点
+                    prompt = filter_prompt_for_nodes(full_api_prompt, output_node_ids)
                     
                     if not prompt:
-                        print(f"[GroupExecutor] 构建 prompt 失败")
+                        print(f"[GroupExecutor] 筛选 prompt 失败")
                         continue
                     
                     # 处理随机种子：为每个有 seed 参数的节点生成新的随机值
-                    import random
                     for node_id_str, node_data in prompt.items():
                         if "seed" in node_data.get("inputs", {}):
                             new_seed = random.randint(0, 0xffffffffffffffff)
                             prompt[node_id_str]["inputs"]["seed"] = new_seed
+                        # 也处理 noise_seed（某些节点使用这个名称）
+                        if "noise_seed" in node_data.get("inputs", {}):
+                            new_seed = random.randint(0, 0xffffffffffffffff)
+                            prompt[node_id_str]["inputs"]["noise_seed"] = new_seed
                     
                     # 提交到队列
                     prompt_id = self._queue_prompt(prompt)
@@ -671,26 +418,12 @@ class GroupExecutorSender:
             execution_list = signal if isinstance(signal, list) else [signal]
 
             if execution_mode == "后台执行":
-                # 获取完整的 workflow
-                workflow = None
-                if extra_pnginfo and "workflow" in extra_pnginfo:
-                    workflow = extra_pnginfo["workflow"]
-                else:
-                    print(f"[GroupExecutor] 警告：无法获取 workflow，降级为前端执行")
-                    # 降级为前端执行
-                    PromptServer.instance.send_sync(
-                        "execute_group_list", {
-                            "node_id": unique_id,
-                            "execution_list": execution_list
-                        }
-                    )
-                    return ()
-                
-                # 启动后台执行
-                _backend_executor.execute_in_background(
-                    unique_id, 
-                    execution_list, 
-                    workflow
+                # 后台执行模式：通知前端生成 API prompt 并发送给后端
+                PromptServer.instance.send_sync(
+                    "execute_group_list_backend", {
+                        "node_id": unique_id,
+                        "execution_list": execution_list
+                    }
                 )
                 
             else:
@@ -768,6 +501,45 @@ CONFIG_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "group_co
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
 routes = PromptServer.instance.routes
+
+@routes.post("/group_executor/execute_backend")
+async def execute_backend(request):
+    """接收前端发送的执行请求，在后台执行组"""
+    try:
+        data = await request.json()
+        node_id = data.get("node_id")
+        execution_list = data.get("execution_list", [])
+        full_api_prompt = data.get("api_prompt", {})
+        
+        if not node_id:
+            return web.json_response({"status": "error", "message": "缺少 node_id"}, status=400)
+        
+        if not execution_list:
+            return web.json_response({"status": "error", "message": "执行列表为空"}, status=400)
+        
+        if not full_api_prompt:
+            return web.json_response({"status": "error", "message": "缺少 API prompt"}, status=400)
+        
+        print(f"[GroupExecutor] 收到后台执行请求: node_id={node_id}, 执行项数={len(execution_list)}")
+        
+        # 启动后台执行
+        success = _backend_executor.execute_in_background(
+            node_id,
+            execution_list,
+            full_api_prompt
+        )
+        
+        if success:
+            return web.json_response({"status": "success", "message": "后台执行已启动"})
+        else:
+            return web.json_response({"status": "error", "message": "已有任务在执行中"}, status=409)
+            
+    except Exception as e:
+        print(f"[GroupExecutor] 后台执行请求处理失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
 @routes.get("/group_executor/configs")
 async def get_configs(request):
     try:

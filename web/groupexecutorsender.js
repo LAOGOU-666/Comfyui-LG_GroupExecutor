@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { queueManager } from "./queue_utils.js";
+import { queueManager, getOutputNodes } from "./queue_utils.js";
 
 app.registerExtension({
     name: "GroupExecutorSender",
@@ -86,6 +86,77 @@ app.registerExtension({
                     return n.mode !== LiteGraph.NEVER && 
                            n.constructor.nodeData?.output_node === true;
                 });
+            };
+
+            // 后台执行：生成 API prompt 并发送给后端
+            nodeType.prototype.executeInBackend = async function(executionList) {
+                try {
+                    // 1. 生成完整的 API prompt
+                    const { output: fullApiPrompt } = await app.graphToPrompt();
+                    
+                    // 2. 为每个执行项收集输出节点 ID
+                    const enrichedExecutionList = [];
+                    
+                    for (const exec of executionList) {
+                        const groupName = exec.group_name || '';
+                        
+                        // 延迟项直接添加
+                        if (groupName === "__delay__") {
+                            enrichedExecutionList.push(exec);
+                            continue;
+                        }
+                        
+                        if (!groupName) continue;
+                        
+                        // 获取组内的输出节点
+                        const outputNodes = this.getGroupOutputNodes(groupName);
+                        if (!outputNodes || outputNodes.length === 0) {
+                            console.warn(`[GroupExecutorSender] 组 "${groupName}" 中没有输出节点`);
+                            continue;
+                        }
+                        
+                        enrichedExecutionList.push({
+                            ...exec,
+                            output_node_ids: outputNodes.map(n => n.id)
+                        });
+                    }
+                    
+                    if (enrichedExecutionList.length === 0) {
+                        throw new Error("没有有效的执行项");
+                    }
+                    
+                    // 3. 发送给后端
+                    console.log(`[GroupExecutorSender] 发送后台执行请求...`);
+                    const response = await api.fetchApi('/group_executor/execute_backend', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            node_id: this.id,
+                            execution_list: enrichedExecutionList,
+                            api_prompt: fullApiPrompt
+                        })
+                    });
+                    
+                    // 检查响应状态
+                    if (!response.ok) {
+                        const text = await response.text();
+                        console.error(`[GroupExecutorSender] 服务器返回错误 ${response.status}:`, text);
+                        throw new Error(`服务器错误 ${response.status}: ${text.substring(0, 200)}`);
+                    }
+                    
+                    const result = await response.json();
+                    
+                    if (result.status === "success") {
+                        console.log(`[GroupExecutorSender] 后台执行已启动`);
+                        return true;
+                    } else {
+                        throw new Error(result.message || "后台执行启动失败");
+                    }
+                    
+                } catch (error) {
+                    console.error('[GroupExecutorSender] 后台执行失败:', error);
+                    throw error;
+                }
             };
 
             nodeType.prototype.getQueueStatus = async function() {
@@ -193,6 +264,7 @@ app.registerExtension({
                 });
             });
 
+            // 前端执行模式的事件监听
             api.addEventListener("execute_group_list", async ({ detail }) => {
                 if (!detail || !detail.node_id || !Array.isArray(detail.execution_list)) {
                     console.error('[GroupExecutorSender] 收到无效的执行数据:', detail);
@@ -331,6 +403,54 @@ app.registerExtension({
                 } catch (error) {
                     console.error(`[GroupExecutorSender] 执行失败:`, error);
                     app.ui.dialog.show(`执行错误: ${error.message}`);
+                    node.updateStatus(`错误: ${error.message}`);
+                    node.properties.isExecuting = false;
+                    node.properties.isCancelling = false;
+                }
+            });
+
+            // 后台执行模式的事件监听
+            api.addEventListener("execute_group_list_backend", async ({ detail }) => {
+                if (!detail || !detail.node_id || !Array.isArray(detail.execution_list)) {
+                    console.error('[GroupExecutorSender] 收到无效的后台执行数据:', detail);
+                    return;
+                }
+
+                const node = app.graph._nodes_by_id[detail.node_id];
+                if (!node) {
+                    console.error(`[GroupExecutorSender] 未找到节点: ${detail.node_id}`);
+                    return;
+                }
+
+                try {
+                    const executionList = detail.execution_list;
+                    console.log(`[GroupExecutorSender] 收到后台执行列表:`, executionList);
+
+                    if (node.properties.isExecuting) {
+                        console.warn('[GroupExecutorSender] 已有执行任务在进行中');
+                        return;
+                    }
+
+                    node.properties.isExecuting = true;
+                    node.properties.isCancelling = false;
+                    node.updateStatus("正在启动后台执行...");
+
+                    try {
+                        await node.executeInBackend(executionList);
+                        node.updateStatus("后台执行已启动");
+                        setTimeout(() => node.resetStatus(), 2000);
+                    } catch (error) {
+                        console.error('[GroupExecutorSender] 后台执行启动失败:', error);
+                        node.updateStatus(`错误: ${error.message}`);
+                        app.ui.dialog.show(`后台执行错误: ${error.message}`);
+                    } finally {
+                        node.properties.isExecuting = false;
+                        node.properties.isCancelling = false;
+                    }
+
+                } catch (error) {
+                    console.error(`[GroupExecutorSender] 后台执行失败:`, error);
+                    app.ui.dialog.show(`后台执行错误: ${error.message}`);
                     node.updateStatus(`错误: ${error.message}`);
                     node.properties.isExecuting = false;
                     node.properties.isCancelling = false;
