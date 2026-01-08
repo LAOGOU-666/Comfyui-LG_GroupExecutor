@@ -254,7 +254,7 @@ class GroupExecutorBackend:
             # 获取输出节点列表
             outputs_to_execute = list(valid[2])
             
-            server.prompt_queue.put((number, prompt_id, prompt, {}, outputs_to_execute))
+            server.prompt_queue.put((number, prompt_id, prompt, {}, outputs_to_execute, {}))
             
             return prompt_id
             
