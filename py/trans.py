@@ -656,3 +656,169 @@ class LG_AccumulatePreview(SaveImage):
             "ui": {"images": ui_images},
             "result": (accumulated_tensors, accumulated_masks, len(self.accumulated_images))
         }
+
+class LG_ValueSender:
+    """
+    发送任意类型的值
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "value": (any_typ,),
+                "link_id": ("INT", {"default": 0, "min": 0, "max": sys.maxsize, "step": 1}),
+            },
+            "optional": {
+                "signal_opt": (any_typ,),
+            }
+        }
+
+    OUTPUT_NODE = True
+    FUNCTION = "doit"
+    CATEGORY = CATEGORY_TYPE
+    RETURN_TYPES = (any_typ,)
+    RETURN_NAMES = ("signal",)
+
+    def doit(self, value, link_id=0, signal_opt=None):
+        # 转换值为可序列化的字符串
+        if value is None:
+            send_value = ""
+        elif isinstance(value, (str, int, float, bool)):
+            send_value = str(value)
+        elif hasattr(value, 'tolist'):
+            # tensor/numpy array
+            send_value = str(value.tolist())
+        elif isinstance(value, (list, tuple)):
+            send_value = str(list(value))
+        elif isinstance(value, dict):
+            send_value = str(value)
+        else:
+            send_value = str(value)
+            
+        print(f"[ValueSender] link_id={link_id}, 发送值: {send_value}")
+        PromptServer.instance.send_sync("value-send-accumulate", {
+            "link_id": link_id, 
+            "value": send_value
+        })
+        
+        return (signal_opt,)
+
+
+class LG_ValueReceiver:
+    """
+    接收值，支持累积模式
+    累积多次收到的值成列表
+    """
+    
+    _accumulated_values = {}  # 类级别存储，按 link_id 分组
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "typ": (["STRING", "INT", "FLOAT", "BOOLEAN", "ANY"], {"default": "STRING"}),
+                "value": ("STRING", {"default": "", "multiline": True, 
+                    "tooltip": "接收到的值，由前端自动填充"}),
+                "link_id": ("INT", {"default": 0, "min": 0, "max": sys.maxsize, "step": 1}),
+                "accumulate": ("BOOLEAN", {"default": True, "tooltip": "开启后累积所有收到的值"}),
+            },
+        }
+
+    FUNCTION = "doit"
+    CATEGORY = CATEGORY_TYPE
+    RETURN_TYPES = (any_typ, "INT")
+    RETURN_NAMES = ("values", "count")
+    OUTPUT_IS_LIST = (True, False)
+
+    @classmethod
+    def IS_CHANGED(cls, typ, value, link_id, accumulate):
+        if accumulate:
+            return float("NaN")  # 累积模式下总是执行
+        return hash(str(value))
+
+    def doit(self, typ, value, link_id=0, accumulate=True):
+        # 解析当前收到的值
+        current_values = [v.strip() for v in value.strip().split('\n') if v.strip()]
+        
+        if accumulate:
+            # 累积模式：添加到累积列表
+            if link_id not in LG_ValueReceiver._accumulated_values:
+                LG_ValueReceiver._accumulated_values[link_id] = []
+            
+            for v in current_values:
+                if v not in LG_ValueReceiver._accumulated_values[link_id]:
+                    LG_ValueReceiver._accumulated_values[link_id].append(v)
+            
+            value_list = LG_ValueReceiver._accumulated_values[link_id].copy()
+        else:
+            # 非累积模式：只使用当前值，清空累积
+            LG_ValueReceiver._accumulated_values[link_id] = []
+            value_list = current_values
+        
+        if not value_list:
+            return ([], 0)
+        
+        # 类型转换
+        result = []
+        for v in value_list:
+            try:
+                if typ == "INT":
+                    result.append(int(v))
+                elif typ == "FLOAT":
+                    result.append(float(v))
+                elif typ == "BOOLEAN":
+                    result.append(v.lower() in ("true", "1", "yes"))
+                else:
+                    result.append(v)
+            except (ValueError, TypeError):
+                result.append(v)
+        
+        print(f"[ValueReceiver] link_id={link_id}, 输出 {len(result)} 个值")
+        return (result, len(result))
+    
+    @classmethod
+    def clear_accumulated(cls, link_id=None):
+        """清空累积的值"""
+        if link_id is None:
+            cls._accumulated_values.clear()
+        elif link_id in cls._accumulated_values:
+            cls._accumulated_values[link_id] = []
+
+
+class LG_ClearAccumulatedValues:
+    """
+    清空累积的值
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "link_id": ("INT", {"default": -1, "min": -1, "max": sys.maxsize, "step": 1,
+                    "tooltip": "-1 表示清空所有 link_id 的累积值"}),
+            },
+            "optional": {
+                "signal_opt": (any_typ,),
+            }
+        }
+
+    OUTPUT_NODE = True
+    FUNCTION = "doit"
+    CATEGORY = CATEGORY_TYPE
+    RETURN_TYPES = (any_typ,)
+    RETURN_NAMES = ("signal",)
+
+    def doit(self, link_id=-1, signal_opt=None):
+        if link_id < 0:
+            LG_ValueReceiver.clear_accumulated()
+            # 通知前端清空所有
+            PromptServer.instance.send_sync("value-clear-accumulate", {"link_id": -1})
+            print("[ClearAccumulatedValues] 清空所有累积值")
+        else:
+            LG_ValueReceiver.clear_accumulated(link_id)
+            # 通知前端清空指定 link_id
+            PromptServer.instance.send_sync("value-clear-accumulate", {"link_id": link_id})
+            print(f"[ClearAccumulatedValues] 清空 link_id={link_id} 的累积值")
+        
+        return (signal_opt,)

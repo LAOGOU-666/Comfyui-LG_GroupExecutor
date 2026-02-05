@@ -18,6 +18,9 @@ NODE_CLASS_MAPPINGS = {
     "LG_CreateAndSaveVideo": LG_CreateAndSaveVideo,
     "LG_ConcatVideoFiles": LG_ConcatVideoFiles,
     "LG_SaveAudioGetPath": LG_SaveAudioGetPath,
+    "LG_ValueSender": LG_ValueSender,
+    "LG_ValueReceiver": LG_ValueReceiver,
+    "LG_ClearAccumulatedValues": LG_ClearAccumulatedValues,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GroupExecutorSingle": "🎈GroupExecutorSingle",
@@ -34,4 +37,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LG_CreateAndSaveVideo": "🎈LG_CreateAndSaveVideo",
     "LG_ConcatVideoFiles": "🎈LG_ConcatVideoFiles",
     "LG_SaveAudioGetPath": "🎈LG_SaveAudioGetPath",
+    "LG_ValueSender": "🎈LG_ValueSender",
+    "LG_ValueReceiver": "🎈LG_ValueReceiver",
+    "LG_ClearAccumulatedValues": "🎈LG_ClearAccumulatedValues",
 }
