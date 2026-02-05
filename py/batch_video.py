@@ -15,7 +15,7 @@ from fractions import Fraction
 from comfy.cli_args import args
 CATEGORY_TYPE = "🎈LAOGOU/Group"
 
-class CreateAndSaveVideo:
+class LG_CreateAndSaveVideo:
     """
     从图片创建视频并保存到文件，返回文件路径
     """
@@ -86,7 +86,7 @@ class CreateAndSaveVideo:
         return (file_path,)
 
 
-class ConcatVideoFiles:
+class LG_ConcatVideoFiles:
     """
     使用 FFmpeg 合并多个视频文件
     支持字符串列表输入或多行文本输入
@@ -294,7 +294,7 @@ class ConcatVideoFiles:
                 "result": (output_file,)}
 
 
-class SaveAudioGetPath:
+class LG_SaveAudioGetPath:
     """
     保存音频文件并返回文件路径
     支持 FLAC、MP3、OPUS 格式
@@ -460,14 +460,3 @@ class SaveAudioGetPath:
             return {"ui": {"audio": []}, "result": ("",)}
 
 
-NODE_CLASS_MAPPINGS = {
-    "LG_CreateAndSaveVideo": CreateAndSaveVideo,
-    "LG_ConcatVideoFiles": ConcatVideoFiles,
-    "LG_SaveAudioGetPath": SaveAudioGetPath,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "LG_CreateAndSaveVideo": "Create And Save Video With Path", 
-    "LG_ConcatVideoFiles": "Concat Video Files With Path",
-    "LG_SaveAudioGetPath": "Save Audio With Path",
-}
